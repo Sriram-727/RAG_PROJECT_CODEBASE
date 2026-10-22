@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Document Verifier</title>
+  <meta name="description" content="Document search, retrieval, and verification dashboard." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <div class="app-layout">
+    <!-- TOP HEADER -->
+    <header class="app-header" id="app-header">
+      <div class="brand-section">
+        <div class="brand-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1 class="brand-title">RAG Document Verifier</h1>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <!-- AUTH & SESSION BAR -->
+        <div class="auth-session-bar" id="auth-session-bar">
+          <div id="user-badge-wrap" style="display: none;" class="user-badge-pill">
+            <span id="session-username">usr_admin</span>
+            <span id="session-role" class="user-badge-role role-admin">Admin</span>
+            <span id="session-org" class="status-tag approved">Default</span>
+            <span id="session-status" class="status-tag approved">Approved</span>
+          </div>
+
+          <!-- ADMIN PORTAL BUTTON -->
+          <button type="button" class="btn-admin-portal" id="btn-open-admin-modal" style="display: none;" title="User approvals">
+            <span>Approvals</span>
+            <span class="admin-pending-counter" id="admin-pending-badge">0</span>
+          </button>
+
+          <!-- SIGN IN / REGISTER / LOGOUT BUTTON -->
+          <button type="button" class="btn-auth-action" id="btn-auth-action">
+            <span id="auth-action-text">Sign In</span>
+          </button>
+        </div>
+
+        <div class="connection-status" id="connection-status" title="API Status">
+          <span class="status-dot" id="health-dot"></span>
+          <span class="status-label" id="health-label">Checking API...</span>
+        </div>
+        <a href="/docs" target="_blank" rel="noopener" class="header-link-btn" title="API Documentation">
+          API Docs
+        </a>
+      </div>
+    </header>
+
+    <!-- MAIN CONTENT WRAPPER -->
+    <main class="dashboard-grid">
+      <!-- LEFT PANEL: QUERY WORKBENCH -->
+      <section class="workbench-panel glass-card">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <h2>Query Documents</h2>
+          </div>
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <button type="button" id="btn-open-org-docs" class="preset-btn">
+              <span>View Documents</span>
+            </button>
+            <button type="button" id="btn-open-ingest-modal" class="preset-btn">
+              <span>Upload Document</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- AUTH/APPROVAL STATUS BANNER -->
+        <div id="user-status-notice" class="user-notice-banner notice-approved">
+          <span id="user-status-notice-text">Session: <strong>Guest / Ready</strong> &bull; Access Granted</span>
+        </div>
+
+        <form id="verify-form" class="verify-form">
+          <!-- ACTIVE ORGANIZATION SELECTOR -->
+          <div class="form-group">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <label for="org-id-input" style="margin-bottom: 0;">Organization</label>
+              <button type="button" id="btn-new-org" style="background: none; border: none; color: #60a5fa; font-size: 0.74rem; cursor: pointer; padding: 0;" title="Start a fresh organization">
+                + New Org
+              </button>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <div style="position: relative; flex: 1;">
+                <input 
+                  type="text" 
+                  id="org-id-input" 
+                  list="org-options" 
+                  placeholder="Enter organization ID (e.g. default_org, my_project)..." 
+                  autocomplete="off"
+                />
+              </div>
+              <button type="button" id="btn-view-org-docs" class="preset-btn" title="View documents stored in this organization" style="white-space: nowrap;">
+                <span>Docs</span>
+                <span id="workbench-doc-count" class="chunk-badge">0</span>
+              </button>
+            </div>
+            <datalist id="org-options"></datalist>
+          </div>
+
+          <!-- QUERY TEXT AREA -->
+          <div class="form-group">
+            <div class="form-label-row">
+              <label for="query-input">Question</label>
+              <span class="info-pill" title="Query Masked">PII Filter</span>
+            </div>
+            <textarea id="query-input" rows="4" required placeholder="Enter a question to search across documents..."></textarea>
+          </div>
+
+          <!-- HIDDEN IDENTITY FIELD -->
+          <input type="hidden" id="user-id-input" value="usr_admin" />
+
+          <!-- SUBMIT ACTION -->
+          <button type="submit" class="submit-btn" id="btn-submit">
+            <span class="btn-spinner" id="btn-spinner"></span>
+            <span class="btn-text" id="btn-text">Search Documents</span>
+            <span class="btn-shortcut">Ctrl+Enter</span>
+          </button>
+
+
+        </form>
+      </section>
+
+      <!-- RIGHT PANEL: ANSWER & RESULTS -->
+      <section class="results-panel">
+        <div class="answer-section glass-card" id="answer-card">
+          <div class="answer-header">
+            <div class="answer-title-wrap">
+              <h3>Answer</h3>
+              <span class="chunk-badge" id="metric-chunks-badge">0 Chunks</span>
+              <span id="metric-chunks" style="display: none;">0</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span id="verdict-timing" style="font-size: 0.76rem; color: var(--text-secondary);">Latency: -- ms</span>
+              <span class="masked-query-val mono-text" id="masked-query-val" style="display: none;">--</span>
+              <button type="button" class="copy-btn" id="btn-copy-answer" title="Copy answer to clipboard">
+                <span>Copy</span>
+              </button>
+            </div>
+          </div>
+          <div class="answer-body">
+            <div class="answer-content" id="answer-content">
+              <p class="placeholder-text">Submit a query to view retrieved context and generated answer.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- DOCUMENT INGESTION MODAL DIALOG -->
+  <dialog id="ingest-modal" class="app-dialog">
+    <div class="dialog-header">
+      <div class="dialog-title-wrap">
+        <h3>Upload Document</h3>
+      </div>
+      <button type="button" id="btn-close-ingest-modal" class="dialog-close-btn">&times;</button>
+    </div>
+
+    <div class="dialog-body">
+      <!-- TAB SELECTOR -->
+      <div style="display: flex; gap: 6px; margin-bottom: 12px;">
+        <button type="button" class="preset-btn active" id="tab-ingest-file" style="flex: 1; justify-content: center;">Upload File (.pdf, .txt)</button>
+        <button type="button" class="preset-btn" id="tab-ingest-text" style="flex: 1; justify-content: center;">Paste Text</button>
+      </div>
+
+      <!-- FILE INPUT -->
+      <div id="file-upload-wrap" style="margin-bottom: 12px;">
+        <input type="file" id="ingest-file-input" accept=".pdf,.txt" style="padding: 10px; border: 1px dashed var(--border-color); background: var(--bg-inset);" />
+      </div>
+
+      <!-- TEXT INPUT -->
+      <div id="text-upload-wrap" style="display: none; margin-bottom: 12px;">
+        <textarea id="ingest-text-input" rows="5" placeholder="Paste document text here..."></textarea>
+      </div>
+
+      <div class="form-row" style="margin-bottom: 12px;">
+        <div class="form-group flex-1" style="margin-bottom: 0;">
+          <label for="ingest-doc-id">Document ID</label>
+          <input type="text" id="ingest-doc-id" placeholder="Auto-generated from filename" />
+        </div>
+        <div class="form-group flex-1" style="margin-bottom: 0;">
+          <label for="ingest-user-id">User ID</label>
+          <input type="text" id="ingest-user-id" value="usr_admin" />
+        </div>
+        <div class="form-group flex-1" style="margin-bottom: 0;">
+          <label for="ingest-org-id">Target Organization</label>
+          <input type="text" id="ingest-org-id" list="org-options" placeholder="e.g. default_org" />
+        </div>
+      </div>
+
+      <button type="button" id="btn-run-ingest" class="submit-btn" style="margin-bottom: 8px;">
+        <span id="ingest-btn-text">Upload &amp; Ingest</span>
+      </button>
+
+      <div id="ingest-status-box" style="display: none; padding: 10px; border-radius: var(--radius-sm); font-size: 0.8rem; line-height: 1.4; margin-bottom: 8px;"></div>
+
+      <button type="button" id="btn-view-qdrant" class="preset-btn" style="width: 100%; justify-content: center;">
+        <span>View Stored Documents</span>
+      </button>
+    </div>
+  </dialog>
+
+  <!-- STORED DOCUMENTS VIEWER MODAL -->
+  <dialog id="qdrant-modal" style="width: 90%; max-width: 800px; padding: 0;">
+    <div class="dialog-header">
+      <div class="dialog-title-wrap">
+        <h3 id="qdrant-modal-title">Stored Documents</h3>
+      </div>
+      <button type="button" id="btn-close-qdrant-modal" class="dialog-close-btn">&times;</button>
+    </div>
+    <div id="qdrant-modal-content" style="max-height: 65vh; overflow-y: auto; padding: 16px; font-size: 0.85rem;">
+      <p style="color: var(--text-secondary);">Loading stored documents...</p>
+    </div>
+  </dialog>
+
+  <!-- AUTHENTICATION MODAL -->
+  <dialog id="auth-modal" class="leetcode-auth-dialog">
+    <div class="dialog-header">
+      <div class="dialog-title-wrap">
+        <h3 id="auth-modal-title">Authentication</h3>
+      </div>
+      <button type="button" id="btn-close-auth-modal" class="dialog-close-btn">&times;</button>
+    </div>
+
+    <div class="leetcode-auth-card">
+      <!-- TABS -->
+      <div class="leetcode-tabs">
+        <button type="button" class="leetcode-tab-btn active" id="tab-login-btn">Sign In</button>
+        <button type="button" class="leetcode-tab-btn" id="tab-signup-btn">Sign Up</button>
+      </div>
+
+      <!-- GOOGLE SSO BUTTON -->
+      <button type="button" id="btn-google-sso" class="leetcode-google-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24">
+          <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+          <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.34 24 12 24z"/>
+          <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 10.03 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+          <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+        </svg>
+        <span id="btn-google-sso-label">Continue with Google</span>
+      </button>
+
+      <div class="leetcode-divider">
+        <span>or</span>
+      </div>
+
+      <!-- TAB 1: SIGN IN PANEL -->
+      <div id="tab-login-panel">
+        <form id="form-login">
+          <div class="leetcode-input-group">
+            <label class="leetcode-label" for="login-username">Username</label>
+            <input type="text" id="login-username" class="leetcode-input" required placeholder="admin" />
+          </div>
+          <div class="leetcode-input-group">
+            <label class="leetcode-label" for="login-password">Password</label>
+            <input type="password" id="login-password" class="leetcode-input" required placeholder="Password" />
+          </div>
+
+          <div id="login-feedback" style="display: none; padding: 8px 12px; border-radius: 4px; font-size: 0.8rem; margin-bottom: 10px;"></div>
+
+          <button type="submit" id="btn-submit-login" class="leetcode-submit-btn">
+            <span>Sign In</span>
+          </button>
+        </form>
+
+        <div class="leetcode-switch-text">
+          Don't have an account? <a id="link-switch-to-signup">Sign Up</a>
+        </div>
+
+        <div style="margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border-color); text-align: center;">
+          <button type="button" class="admin-chip" data-user="admin" data-pass="AdminPass2026!">Demo Account (admin)</button>
+        </div>
+      </div>
+
+      <!-- TAB 2: SIGN UP PANEL -->
+      <div id="tab-signup-panel" style="display: none;">
+        <form id="form-signup">
+          <div class="leetcode-input-group">
+            <label class="leetcode-label" for="signup-fullname">Full Name</label>
+            <input type="text" id="signup-fullname" class="leetcode-input" required placeholder="Full Name" />
+          </div>
+          <div class="leetcode-input-group">
+            <label class="leetcode-label" for="signup-email">Email Address</label>
+            <input type="email" id="signup-email" class="leetcode-input" required placeholder="user@company.com" />
+          </div>
+          <div class="leetcode-input-group">
+            <label class="leetcode-label" for="signup-username">Username</label>
+            <input type="text" id="signup-username" class="leetcode-input" required placeholder="Username" />
+          </div>
+          <div class="leetcode-input-group">
+            <label class="leetcode-label" for="signup-password">Password</label>
+            <input type="password" id="signup-password" class="leetcode-input" required placeholder="Password (min 6 chars)" />
+          </div>
+          <div class="leetcode-input-group">
+            <label class="leetcode-label" for="signup-org">Target Organization</label>
+            <input type="text" id="signup-org" class="leetcode-input" list="org-options" placeholder="e.g. default_org" required />
+          </div>
+
+          <div id="signup-feedback" style="display: none; padding: 8px 12px; border-radius: 4px; font-size: 0.8rem; margin-bottom: 10px;"></div>
+
+          <button type="submit" id="btn-submit-signup" class="leetcode-submit-btn">
+            <span>Create Account</span>
+          </button>
+        </form>
+
+        <div class="leetcode-switch-text">
+          Already have an account? <a id="link-switch-to-login">Sign In</a>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- GOOGLE ACCOUNT CHOOSER MODAL -->
+  <dialog id="google-account-modal" class="google-chooser-dialog">
+    <div class="dialog-header">
+      <div class="dialog-title-wrap">
+        <h3>Choose Google Account</h3>
+      </div>
+      <button type="button" id="btn-close-google-chooser" class="dialog-close-btn">&times;</button>
+    </div>
+
+    <div class="google-chooser-card">
+      <div style="margin-bottom: 12px;">
+        <label for="google-chooser-tenant" style="display: block; font-size: 0.78rem; margin-bottom: 4px;">
+          Target Organization:
+        </label>
+        <input type="text" id="google-chooser-tenant" list="org-options" placeholder="Enter target organization..." />
+      </div>
+
+      <div id="google-account-list">
+        <!-- Account 1 -->
+        <div class="google-account-item" data-email="user@gmail.com" data-name="Google User">
+          <div class="google-avatar" style="background: #2563eb;">U</div>
+          <div style="flex: 1; text-align: left;">
+            <div style="font-weight: 500; font-size: 0.85rem;">Google User</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);">user@gmail.com</div>
+          </div>
+        </div>
+
+        <!-- Custom Account Option -->
+        <div class="google-account-item" id="btn-use-another-google-account">
+          <div class="google-avatar" style="background: #334155;">+</div>
+          <div style="flex: 1; text-align: left;">
+            <div style="font-weight: 500; font-size: 0.85rem;">Use another account</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Expandable Custom Account Form -->
+      <div id="google-custom-account-box" style="display: none; margin-top: 10px; padding: 10px; background: var(--bg-inset); border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;">
+          <input type="email" id="google-custom-email" placeholder="user@gmail.com" />
+          <input type="text" id="google-custom-name" placeholder="Display Name" />
+        </div>
+        <button type="button" id="btn-submit-custom-google" class="submit-btn" style="padding: 6px;">
+          Continue with this Account
+        </button>
+      </div>
+
+      <div id="google-chooser-feedback" style="display: none; padding: 8px 12px; border-radius: 4px; font-size: 0.8rem; margin-top: 10px;"></div>
+    </div>
+  </dialog>
+
+  <!-- ADMIN APPROVALS MODAL -->
+  <dialog id="admin-modal" class="app-dialog" style="max-width: 620px;">
+    <div class="dialog-header">
+      <div class="dialog-title-wrap">
+        <div>
+          <h3 style="margin: 0;">User Approvals</h3>
+          <p id="admin-modal-subtitle" style="font-size: 0.74rem; color: var(--text-secondary); margin: 2px 0 0 0;">Pending registration requests</p>
+        </div>
+      </div>
+      <button type="button" id="btn-close-admin-modal" class="dialog-close-btn">&times;</button>
+    </div>
+
+    <div class="dialog-body">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">Pending Requests (<span id="admin-pending-total" style="font-weight: 600; color: var(--color-warning);">0</span>)</span>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" id="btn-approve-all-users" class="preset-btn" style="background: var(--color-primary); color: #fff; font-weight: 500;">✓ Approve All</button>
+          <button type="button" id="btn-refresh-approvals" class="preset-btn">Refresh</button>
+        </div>
+      </div>
+
+      <div id="admin-action-feedback" style="display: none; padding: 8px 12px; border-radius: 4px; font-size: 0.8rem; margin-bottom: 12px;"></div>
+
+      <div id="admin-pending-list" class="approval-list-wrap">
+        <div style="text-align: center; padding: 24px; color: var(--text-muted); font-size: 0.82rem;">
+          No pending approvals across organizations.
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

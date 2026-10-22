@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+qdrant-client
+sentence-transformers
+pydantic
+pydantic-settings
+cryptography
+numpy
+scikit-learn
+pypdf
+python-multipart
+langchain
+langchain-community
+langchain-qdrant
+langchain-huggingface
+langchain-ollama
+flashrank

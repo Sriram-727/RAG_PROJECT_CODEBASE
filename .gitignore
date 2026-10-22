@@ -1,0 +1,76 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables & Secrets (CRITICAL: Do not commit active credentials)
+.env
+.env.*
+!.env.example
+
+# Local SQLite Databases & Runtime Storage
+storage_data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local Vector Storage & Persistent Directories
+qdrant_storage/
+local_qdrant/
+
+# Binary / Numpy data (keep pre-computed IVF index files)
+*.npy
+!ivf_centroids.npy
+!ivf_radii.npy
+
+# Logs and Error Traces
+*.log
+scratch/import_error.txt
+
+# Windows Explorer Duplicates / Temporary Files
+* copy.*
+* copy.*.py
+* copy.txt
+*~
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor Specific Folders
+.idea/
+.vscode/
+*.swp
+*.swo
