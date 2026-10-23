@@ -1,0 +1,236 @@
+{
+  "environment": {
+    "python": "3.13.12",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+    "kmeans": "numpy Lloyd k-means (kmeans++ init, 10 restarts, 300 iterations)",
+    "embedder": "hashed bag-of-words fallback (EmbeddingService._mock_embed)"
+  },
+  "mmr_proof_verification": [
+    {
+      "chunks": 100,
+      "mmr_build_s": 0.002,
+      "verify_median_ms": 0.0098,
+      "verify_p95_ms": 0.0126,
+      "mean_sibling_hashes": 5.2
+    },
+    {
+      "chunks": 1000,
+      "mmr_build_s": 0.017,
+      "verify_median_ms": 0.0139,
+      "verify_p95_ms": 0.0217,
+      "mean_sibling_hashes": 7.8
+    },
+    {
+      "chunks": 10000,
+      "mmr_build_s": 0.229,
+      "verify_median_ms": 0.0203,
+      "verify_p95_ms": 0.0255,
+      "mean_sibling_hashes": 11.04
+    }
+  ],
+  "aes_gcm_decrypt_500B": {
+    "median_ms": 0.0044,
+    "p95_ms": 0.005
+  },
+  "corpus": {
+    "source": "corpus.txt",
+    "chars": 66237,
+    "chunks": 188,
+    "chunk_size": 500,
+    "overlap": 50,
+    "dim": 384
+  },
+  "dbv_ablation": [
+    {
+      "n_lists": 6,
+      "margin_factor": 0.1,
+      "recall_at_5": 0.757,
+      "mean_cells_probed": 1.63,
+      "mean_fraction_scanned": 0.3614,
+      "queries_with_multiple_required_cells": 0.385,
+      "omission_attempts": 326,
+      "omission_detected": 326
+    },
+    {
+      "n_lists": 6,
+      "margin_factor": 0.25,
+      "recall_at_5": 0.949,
+      "mean_cells_probed": 3.33,
+      "mean_fraction_scanned": 0.6627,
+      "queries_with_multiple_required_cells": 0.785,
+      "omission_attempts": 667,
+      "omission_detected": 667
+    },
+    {
+      "n_lists": 6,
+      "margin_factor": 0.5,
+      "recall_at_5": 0.992,
+      "mean_cells_probed": 5.54,
+      "mean_fraction_scanned": 0.9472,
+      "queries_with_multiple_required_cells": 0.985,
+      "omission_attempts": 1107,
+      "omission_detected": 1107
+    },
+    {
+      "n_lists": 6,
+      "margin_factor": 1.0,
+      "recall_at_5": 0.998,
+      "mean_cells_probed": 5.97,
+      "mean_fraction_scanned": 0.9951,
+      "queries_with_multiple_required_cells": 0.995,
+      "omission_attempts": 1195,
+      "omission_detected": 1195
+    },
+    {
+      "n_lists": 6,
+      "margin_factor": 1.2,
+      "recall_at_5": 1.0,
+      "mean_cells_probed": 6.0,
+      "mean_fraction_scanned": 1.0,
+      "queries_with_multiple_required_cells": 1.0,
+      "omission_attempts": 1200,
+      "omission_detected": 1200
+    },
+    {
+      "n_lists": 6,
+      "margin_factor": 1.5,
+      "recall_at_5": 1.0,
+      "mean_cells_probed": 6.0,
+      "mean_fraction_scanned": 1.0,
+      "queries_with_multiple_required_cells": 1.0,
+      "omission_attempts": 1200,
+      "omission_detected": 1200
+    },
+    {
+      "n_lists": 6,
+      "margin_factor": 2.0,
+      "recall_at_5": 1.0,
+      "mean_cells_probed": 6.0,
+      "mean_fraction_scanned": 1.0,
+      "queries_with_multiple_required_cells": 1.0,
+      "omission_attempts": 1200,
+      "omission_detected": 1200
+    },
+    {
+      "n_lists": 16,
+      "margin_factor": 0.1,
+      "recall_at_5": 0.614,
+      "mean_cells_probed": 1.69,
+      "mean_fraction_scanned": 0.1781,
+      "queries_with_multiple_required_cells": 0.37,
+      "omission_attempts": 337,
+      "omission_detected": 337
+    },
+    {
+      "n_lists": 16,
+      "margin_factor": 0.25,
+      "recall_at_5": 0.836,
+      "mean_cells_probed": 4.46,
+      "mean_fraction_scanned": 0.4195,
+      "queries_with_multiple_required_cells": 0.755,
+      "omission_attempts": 891,
+      "omission_detected": 891
+    },
+    {
+      "n_lists": 16,
+      "margin_factor": 0.5,
+      "recall_at_5": 0.933,
+      "mean_cells_probed": 10.43,
+      "mean_fraction_scanned": 0.7375,
+      "queries_with_multiple_required_cells": 0.895,
+      "omission_attempts": 2086,
+      "omission_detected": 2086
+    },
+    {
+      "n_lists": 16,
+      "margin_factor": 1.0,
+      "recall_at_5": 0.987,
+      "mean_cells_probed": 15.29,
+      "mean_fraction_scanned": 0.9637,
+      "queries_with_multiple_required_cells": 0.985,
+      "omission_attempts": 3058,
+      "omission_detected": 3058
+    },
+    {
+      "n_lists": 16,
+      "margin_factor": 1.2,
+      "recall_at_5": 0.991,
+      "mean_cells_probed": 15.6,
+      "mean_fraction_scanned": 0.978,
+      "queries_with_multiple_required_cells": 0.99,
+      "omission_attempts": 3119,
+      "omission_detected": 3119
+    },
+    {
+      "n_lists": 16,
+      "margin_factor": 1.5,
+      "recall_at_5": 0.994,
+      "mean_cells_probed": 15.8,
+      "mean_fraction_scanned": 0.9881,
+      "queries_with_multiple_required_cells": 0.995,
+      "omission_attempts": 3160,
+      "omission_detected": 3160
+    },
+    {
+      "n_lists": 16,
+      "margin_factor": 2.0,
+      "recall_at_5": 0.995,
+      "mean_cells_probed": 15.92,
+      "mean_fraction_scanned": 0.995,
+      "queries_with_multiple_required_cells": 0.995,
+      "omission_attempts": 3184,
+      "omission_detected": 3184
+    }
+  ],
+  "n_queries": 200,
+  "dbv_check_latency": {
+    "median_ms": 0.0439,
+    "p95_ms": 0.0565
+  },
+  "attack_tests": {
+    "A1_ciphertext_bitflip": {
+      "mmr_rejects": false,
+      "aead_rejects": true
+    },
+    "A2_forged_chunk_hash": {
+      "mmr_rejects": true
+    },
+    "A3_modified_sibling_hash": {
+      "mmr_rejects": true
+    },
+    "A4_ciphertext_swap_between_chunks": {
+      "aead_rejects": false,
+      "note": "AES-GCM is called with associated_data=None and the plaintext hash is not re-checked after decryption, so a swapped (ciphertext, nonce) pair is accepted"
+    },
+    "A5_self_consistent_forgery": {
+      "accepted_with_proof_embedded_root": true,
+      "accepted_against_trusted_root": false,
+      "note": "the query path passes expected_cloud_root=proof.expected_cloud_root, i.e. the root carried by the response itself"
+    },
+    "A7_cross_tenant_access": {
+      "own_org_allowed": true,
+      "other_org_blocked": true,
+      "other_org_blocked_2": true,
+      "pending_user_blocked": true,
+      "unknown_user_blocked": true
+    }
+  },
+  "per_query_verification": [
+    {
+      "retrieved_chunks": 5,
+      "median_ms": 0.125,
+      "p95_ms": 0.23
+    },
+    {
+      "retrieved_chunks": 22,
+      "median_ms": 0.351,
+      "p95_ms": 0.551
+    },
+    {
+      "retrieved_chunks": 50,
+      "median_ms": 0.761,
+      "p95_ms": 1.236
+    }
+  ]
+}

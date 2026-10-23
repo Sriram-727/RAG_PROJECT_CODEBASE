@@ -1,0 +1,527 @@
+References50
+CHAPTER 1: INTRODUCTION
+1.1 BACKGROUND AND MOTIVATION
+Large Language Models (LLMs) have demonstrated transformative capabilities across natural language comprehension, automated code synthesis, clinical decision support, and complex multi-step reasoning. Despite remarkable linguistic fluency, standalone parametric LLMs remain fundamentally constrained by static pre-training knowledge cutoffs, an inability to inspect private corporate repositories, and a persistent tendency to fabricate plausible yet unverifiable statements—a phenomenon formally designated as factual hallucination [1]. In mission-critical enterprise domains such as legal contract analysis, financial auditing, and medical informatics, ungrounded generative outputs pose severe operational and regulatory risks.
+
+Retrieval-Augmented Generation (RAG) has emerged as the de facto architectural paradigm for overcoming parametric limitations by retrieving semantically relevant document segments from an external knowledge index and injecting those segments directly into the inference context window of the generative model [1]. In a standard RAG workflow, unstructured enterprise documents are segmented into text chunks, converted into high-dimensional dense semantic vectors via neural embedding transformers, and stored within specialized vector databases. When a user submits a natural language query, the system embeds the query into the same metric space and executes an Approximate Nearest Neighbor (ANN) search to fetch the top-K most relevant chunks.
+
+Because maintaining multi-gigabyte or terabyte-scale high-dimensional vector indices and orchestrating sub-second ANN searches require substantial random-access memory (RAM) and parallel compute infrastructure [2, 3], organizations routinely offload the vector storage and retrieval tier to commercial Database-as-a-Service (DBaaS) and cloud vector providers such as Amazon Web Services (AWS), Google Cloud Platform, Pinecone, or Qdrant Cloud. While cloud outsourcing eliminates local hardware maintenance and provides elastic scalability, delegating proprietary enterprise knowledge bases and similarity search execution to third-party cloud environments introduces a critical trust and security dilemma [4].
+
+Conventional cloud vector databases require either plaintext document payloads or unmasked floating-point embeddings to build navigable proximity structures such as Inverted File (IVF) clusters and Hierarchical Navigable Small World (HNSW) graphs [2, 3]. Recent breakthroughs in adversarial machine learning have proven that dense semantic embeddings are not irreversible cryptographic hashes; rather, vector representations encode nearly as much sensitive information as raw text [5]. Furthermore, because commercial cloud servers operate as opaque black-box environments, a client organization possesses no native cryptographic mechanism to verify whether returned search results are authentic, untampered, and complete. Bridging the gap between high-speed cloud vector retrieval and mathematical data security motivates the design of the Asymmetric Verification Framework presented in this report.
+1.2 PROBLEM STATEMENT
+Outsourcing enterprise vector indexing and similarity search to untrusted commercial cloud infrastructures exposes the retrieval pipeline to five interconnected security and performance vulnerabilities. Figure 1.1 illustrates the structural vulnerability points across a conventional cloud-assisted RAG lifecycle.
+
+Fig 1.1: Structural Vulnerability Points in Conventional Cloud-Assisted RAG Pipelines
+
+As depicted in Fig 1.1, transitioning from raw enterprise documents to a grounded generative response over an untrusted network raises five specific technical problems:
+
+Confidentiality Breakdown and Embedding Inversion: Uploading plaintext document chunks or unmasked dense semantic embeddings exposes confidential intellectual property, trade secrets, and personal records to untrusted cloud operators. State-of-the-art embedding inversion attacks, such as Vec2Text [5], demonstrate that raw floating-point embeddings can be inverted back into near-exact cleartext sentences via iterative hypothesis refinement. Concurrently, semantic membership inference attacks such as S2MIA [6] exploit generative outputs to deduce whether specific proprietary records reside within the retrieval corpus.
+Opaque and Untrusted Cloud Execution: Commercial cloud vector servers function as black-box environments that may behave as honest-but-curious adversaries, suffer internal privilege escalation, or experience silent index corruption without notifying client applications [4].
+Unverifiable Retrieval Integrity: Standard vector databases return top-K candidate chunks without any cryptographic proof of origin. A compromised cloud server or man-in-the-middle adversary can maliciously splice, modify, or forge retrieved context chunks to poison downstream LLM generation without client detection.
+Silent Cluster Omission Attacks: In partitioned vector indices such as IVF Voronoi clusters or HNSW proximity graphs [2, 3], a resource-rational ("lazy") or cost-cutting cloud provider can selectively skip probing computationally dense partitions to conserve server CPU and RAM cycles. Omitting boundary clusters silently degrades retrieval recall and induces factual hallucinations in the LLM response.
+Zero-Knowledge Proof (ZKP) Proving Cost: Existing academic proposals for verifiable vector search—including VeriRAG [7], V3DB [8], and zkRAG [9]—rely on zero-knowledge succinct non-interactive arguments of knowledge (zk-SNARKs) over Rank-1 Constraint Systems (R1CS) or Fully Homomorphic Encryption (FHE). Server-side proof generation remains expensive. The authors report about 50 s per HNSW query for zkRAG [9] (10^6 vectors, 128 dimensions, single thread), a prover time of 96 s and a verifier time of 3 s for VeriRAG [7] on a 37 GB dataset, and 5.90–11.57 s of proving for VERIF [25] on 8–32 million vectors, while verification costs range from milliseconds (V3DB [8]) to about 1–3 s. Even the fastest of these proving times is well above the sub-2-second end-to-end response that interactive enterprise RAG workflows expect.
+
+Table 1.1 classifies the five primary threat vectors alongside the affected RAG pipeline stages and resulting operational impacts.
+
+Table 1.1: Threat Vector Classification in Outsourced Cloud RAG Environments
+
+Threat ID
+Vulnerability Category
+Target Pipeline Stage
+Adversarial Mechanism
+Operational Impact on Enterprise
+TV-01
+Embedding Inversion &amp; Eavesdropping
+Vector Ingestion &amp; Querying
+Iterative gradient/token inversion (Vec2Text) on un
+masked ℝᵈ vectors [5]
+Complete exposure of confidential corporate plaintext and PII
+TV-02
+Malicious Chunk Forgery &amp; Splicing
+Cloud Storage &amp; Top-K Return
+Bit-flipping ciphertexts or swapping chunks
+ across document boundaries
+Context poisoning and targeted manipulation of LLM outputs
+TV-03
+Silent Cluster Omission (Lazy Cloud)
+Multi-Probe ANN Search
+Skipping mandatory adjacent Voronoi
+ IVF cells during search
+Degraded Recall@K and ungrounded LLM hallucinations
+TV-04
+Cross-Tenant Privilege Escalation
+Multi-Tenant API &amp; Index Access
+Querying restricted collections using
+ unauthorized session tokens
+Breach of organizational isolation and regulatory non-compliance
+TV-05
+Cryptographic Proving Bottleneck
+Verifiable Proof Generation
+R1CS arithmetic circuit evaluation
+ over d ≥ 384 floating-point dimensions
+Roughly 6–96 s of server-side proving per query reported for RAG-specific ZK systems [7], [9], [25]; heavy prover memory
+
+As summarized in Table 1.1, a practical security architecture must simultaneously neutralize confidentiality, integrity, completeness, and multi-tenancy threats (TV-01 through TV-04) without triggering the computational bottleneck of zero-knowledge circuit proving (TV-05).
+1.3 OBJECTIVES
+The primary objective of this project is to design, implement, and empirically validate an Asymmetric Verification Framework for cloud-assisted RAG systems that achieves cryptographic security with sub-30-millisecond verification latency. The specific technical objectives are:
+
+To establish an asymmetric, zero-knowledge-proof-free trust boundary between a lightweight trusted client enclave and an untrusted commercial cloud vector engine, isolating all cryptographic keys and master state roots strictly within the client domain;
+To formulate an isometric orthogonal vector masking transformation using QR decomposition paired with secret coordinate permutation that preserves exact inner products and cosine similarity rankings on the cloud while making Vec2Text embedding inversion substantially harder for an adversary who observes only masked data;
+To construct an append-only, Two-Tier Merkle Mountain Range (MMR) auditing structure comprising per-tenant User MMRs (Tier 1) and a unified Cloud Enterprise MMR (Tier 2) capable of generating and verifying O(log N) cryptographic inclusion proofs;
+To develop an algebraic Voronoi Dynamic Boundary Validation (DBV) protocol utilizing a 1.5 × r_closest multi-probe cosine margin expansion to detect lazy-cloud cluster omission by requiring verifiable evidence for every cell the cloud must probe (Section 3.5); the 1.5 factor is justified by a margin ablation over 1.2, 1.5 and 2.0 measuring recall, cells probed and false-alarm rate on honest runs ;
+To integrate a deterministic five-gate sequential client verification pipeline combining Role-Based Access Control (RBAC), MMR integrity auditing, DBV completeness checking, AES-256-GCM authenticated decryption, and Corrective RAG (CRAG) / Self-RAG reflection prior to LLM synthesis; and
+To benchmark the complete framework against state-of-the-art zk-SNARK verifiable RAG baselines and evaluate tamper detection across normal and adversarial operational scenarios.
+1.4 PROPOSED SYSTEM OVERVIEW
+Rather than forcing untrusted cloud servers to compile heavy arithmetic zero-knowledge circuits, the proposed Asymmetric Verification Framework shifts the cryptographic root of trust and lightweight verification burden to a trusted client enclave. The system decouples RAG execution into an offline document ingestion and indexing phase (Phase A) and an online query retrieval and verification phase (Phase B), orchestrated across six modular pipelines:
+
+Module 1 (Local Ingestion and Hierarchical Chunking): Ingests multi-format enterprise documents (PDF, DOCX, TXT) within the client enclave and segments text into coarse-grained parent chunks (800–1,200 characters) for LLM context synthesis and fine-grained child chunks (200–300 characters) linked via bidirectional metadata pointers for dense indexing.
+Module 2 (Privacy Transformation Engine): Generates L₂-normalized 384-dimensional dense embeddings locally using models such as BAAI/bge-small-en-v1.5 or all-MiniLM-L6-v2, masks vectors via a secret orthogonal matrix Q and coordinate permutation π, and encrypts plaintext chunks using AES-256-GCM authenticated encryption [11].
+Module 3 (Two-Tier Trust Structure Builder): Computes domain-separated SHA-256 leaf digests binding chunk metadata and plaintext hashes, appends leaves to per-tenant Tier 1 User MMRs, and bags tenant peaks into a global Tier 2 Cloud Enterprise MMR anchored by a local 32-byte root R_ent [12, 13].
+Module 4 (Cloud Indexing and Multi-Probe ANN Search): Stores only masked vectors, AES-256-GCM ciphertexts, and structural MMR mirror nodes inside the untrusted cloud engine (Qdrant/FAISS), executing multi-probe ANN search over Voronoi IVF clusters and HNSW graphs [2, 3].
+Module 5 (Dynamic Boundary Validation): Audits search completeness inside the client enclave by computing exact cosine distances between the query vector and local Voronoi coarse-quantizer centroids, verifying that the cloud supplied evidence for every mandatory boundary cluster within a 1.5 × r_closest margin.
+Module 6 (Five-Gate Sequential Client Verifier and Grounded Synthesis): Enforces RBAC tenant isolation, Two-Tier MMR inclusion proof verification, DBV completeness validation, AES-256-GCM tag decryption, and CRAG/Self-RAG relevance reflection [14, 15] before passing verified context to the generative LLM (Ollama, Groq, or Gemini).
+1.5 SCOPE OF THE PROJECT
+The scope of this project encompasses the architectural design, mathematical formulation, software implementation, and empirical security evaluation of the Asymmetric Verification Framework for text-based enterprise RAG repositories. The client enclave and verification engine are implemented in Python 3.11 using FastAPI, PyTorch, NumPy, scikit-learn, and the standard cryptography package, interfacing with Qdrant and FAISS vector backends. Dense semantic representations are standardized on 384-dimensional normalized embeddings (BAAI/bge-small-en-v1.5), and generative synthesis is validated across local Ollama models as well as cloud-hosted Groq and Gemini APIs.
+
+The framework operates under the foundational assumption that the client enclave (an enterprise security gateway or local workstation) securely safeguards the master secret tuple K_client = {Q, π, K_AES, R_ent} against local operating system compromise. Voronoi coarse-quantizer centroids are trained during batch indexing cycles. Hardware-level enclave integration via Intel SGX or ARM TrustZone Trusted Execution Environments (TEEs) and streaming real-time centroid re-clustering without re-masking are designated as extensions outside the current implementation scope.
+1.6 ORGANIZATION OF THE REPORT
+This project report is organized into six chapters followed by a comprehensive bibliography of twenty-six references:
+
+Chapter 1: Introduction establishes the enterprise motivation for Retrieval-Augmented Generation, formulates the five-part problem statement governing untrusted cloud vector outsourcing (illustrated in Fig 1.1 and classified in Table 1.1), defines the project objectives, summarizes the six-module proposed system, and delineates the operational scope.
+Chapter 2: Traditional Methods reviews conventional cloud vector search architectures and foundational cryptographic primitives (summarized in Table 2.1), surveys state-of-the-art privacy-preserving and verifiable RAG systems (categorized in Fig 2.1 and compared in Table 2.2), introduces the mathematical preliminaries of Merkle Mountain Ranges, Voronoi tessellation, orthogonal groups, and AEAD ciphers, and identifies the critical limitations of existing approaches.
+Chapter 3: Idea Proposed defines the formal system threat model and security assumptions (detailed in Table 3.1), presents the end-to-end asymmetric verification architecture (shown in Fig 3.1 and Table 3.2), and explains the engineering mechanics of hierarchical parent-child chunking (Fig 3.2), privacy transformation, Two-Tier MMR construction (Fig 3.3), Dynamic Boundary Validation, and the five-gate sequential verifier.
+Chapter 4: Mathematical Formulations and Security Analysis derives the exact linear algebra proofs for isometric orthogonal inner-product preservation (summarized with notation in Table 4.1), formulates the SHA-256 leaf binding and peak-bagging equations for Two-Tier MMR auditing, establishes the hyper-spherical geometry of Voronoi DBV (illustrated in Fig 4.1), and maps the five-gate verification workflow (Fig 4.2) to formal cryptographic security guarantees.
+Chapter 5: Experimental Evaluation and Performance Analysis documents the hardware and software implementation environment (Table 5.1), reports micro-benchmark comparisons against zk-SNARK baselines (Table 5.2), evaluates the framework across four normal and adversarial operational scenarios (Table 5.3), discusses the empirical findings, and concludes with directions for future work.
+Chapter 6: Result Analysis presents the visual and operational validation of the deployed prototype across the Qdrant vector database dashboard and the RAG Document Verifier client application. It demonstrates multi-tenant collection isolation, AES-256-GCM payload encryption, fine-grained Access Control List (ACL) binding, HNSW proximity graph construction over orthogonally masked vectors, Two-Tier MMR proof path storage, and real-time enforcement of cross-tenant access blocking 
+CHAPTER 2: TRADITIONAL METHODS
+2.1 CONVENTIONAL CLOUD VECTOR RETRIEVAL AND CRYPTOGRAPHIC SCHEMES
+Modern enterprise Retrieval-Augmented Generation systems rely on Approximate Nearest Neighbor (ANN) indexing structures to search millions of high-dimensional embedding vectors in sub-linear time [2, 3]. Because exact exhaustive K-Nearest Neighbor (K-NN) search scales linearly as O(N · d) for N vectors of dimension d, production vector engines such as FAISS [2] and Qdrant employ space-partitioning and graph-traversal heuristics. The two predominant indexing paradigms are Inverted File (IVF) indexing, which partitions the metric space ℝᵈ into C Voronoi cells using K-Means clustering [2], and Hierarchical Navigable Small World (HNSW) graphs, which construct multi-layered proximity graphs supporting logarithmic greedy routing [3].
+
+When enterprises deploy IVF or HNSW indices on third-party cloud infrastructure, protecting data confidentiality and query integrity requires cryptographic intervention. Historically, four broad cryptographic families have been applied to outsourced database search:
+
+Symmetric Property-Preserving and Order-Preserving Encryption (PPE/OPE): Encrypts scalar values while preserving relative ordering for range queries [16]. However, PPE and OPE leak statistical distribution profiles and cannot evaluate multi-dimensional Euclidean norms or cosine similarities in ℝᵈ.
+Fully Homomorphic Encryption (FHE): Schemes based on Ring Learning With Errors (RLWE), such as CKKS [17], permit arbitrary addition and multiplication directly over ciphertexts. While FHE provides strong semantic security, evaluating homomorphic inner products and non-linear top-K comparisons across hundreds of thousands of 384-dimensional vectors incurs multi-second to multi-minute latency per query and expands ciphertext storage by orders of magnitude.
+Trusted Execution Environments (TEEs): Hardware enclaves such as Intel SGX isolate vector computation inside encrypted CPU memory pages [26]. Although TEEs achieve near-native execution speeds, commercial cloud TEEs remain vulnerable to microarchitectural side-channel attacks (e.g., Foreshadow, Plundervolt), page-fault leakage, and restricted enclave Page Cache (EPC) memory limits that force costly paging during large HNSW graph traversals.
+Zero-Knowledge Succinct Non-Interactive Arguments of Knowledge (zk-SNARKs): Cryptographic proof systems (such as Groth16 [19] and Plonk [20]) allow an untrusted prover (the cloud server) to convince a verifier (the client) that a computation y = F(x, w) was executed correctly without revealing the witness w. However, translating floating-point cosine distance calculations and priority-queue sorting into finite-field arithmetic circuits over Rank-1 Constraint Systems (R1CS) creates millions of multiplication gates, resulting in severe prover memory and latency bottlenecks.
+
+Table 2.1 summarizes the operational trade-offs across these conventional cryptographic primitives when applied to outsourced high-dimensional vector search.
+
+Table 2.1: Comparison of Cryptographic Primitives for Outsourced Vector Search
+
+Cryptographic Paradigm
+Vector Confidentiality
+Retrieval Integrity Proof
+Query Latency (d=384)
+Server RAM Overhead
+Plaintext Cloud ANN (FAISS/Qdrant) [2, 3]
+None (Vulnerable to Vec2Text)
+None
+&lt; 5 ms
+Baseline (1×)
+Fully Homomorphic Encryption (CKKS) [17]
+Cryptographic (RLWE)
+None (Malleable ciphertexts)
+10,000 - 100,000 ms
+High (20× - 50×)
+Hardware Enclaves (Intel SGX TEE) [26]
+Hardware-isolated (Side-channel risk)
+Attestation only
+10 - 50 ms
+Restricted by EPC limits
+Arithmetic zk-SNARKs (Groth16/Plonk) [19, 20]
+Optional (With commitments)
+Mathematical R1CS Proof
+≈ 5,900 - 96,000 ms (RAG-specific systems [7], [9], [25])
+High; varies by system
+Distance-Preserving Matrix Masking
+Isometric Transformation
+None (In prior work)
+&lt; 5 ms
+Baseline (1×)
+
+As shown in Table 2.1, no single traditional primitive simultaneously delivers sub-30 ms interactive latency, low memory overhead, vector confidentiality, tamper-evident integrity, and partition completeness auditing.
+2.2 EARLIER PRIVACY-PRESERVING AND VERIFIABLE RAG APPROACHES
+Research specifically targeting the security of cloud-hosted Retrieval-Augmented Generation spans four primary technical thrusts: distance-preserving vector encryption, membership inference defense, edge-cloud split execution, and zero-knowledge verifiable retrieval. Figure 2.1 presents the taxonomy of existing privacy-preserving and verifiable RAG architectures.
+
+Fig 2.1: Taxonomy of Privacy-Preserving and Verifiable Retrieval Architectures
+
+As categorized in Fig 2.1, each branch of the literature addresses an isolated subset of the cloud RAG threat model:
+
+Distance-Preserving Vector Encryption: In the domain of vector confidentiality, Ye et al. [21] proposed ppRAG, a privacy-preserving RAG framework utilizing distance-preserving matrix encryption to execute ANN search directly on cloud infrastructure without resorting to computationally expensive Homomorphic Encryption. While ppRAG effectively conceals raw vector coordinates against passive eavesdroppers, the framework provides no cryptographic mechanism to audit retrieval integrity or search completeness, leaving the client vulnerable to forged ciphertexts, cross-document chunk splicing, or omitted search partitions.
+Membership Inference Defense and Differential Privacy: Addressing inference-time privacy leakage, Li et al. [6] introduced S2MIA, demonstrating that black-box adversaries can exploit semantic similarity between generated LLM responses and target candidate records to mount high-accuracy membership inference attacks against RAG knowledge bases. To counter such leakage, Grislain [22] developed DP-RAG, which injects calibrated differential privacy (DP) noise into token logits during generative decoding. However, injecting DP noise noticeably degrades factual precision in domain-specific enterprise tasks, and the cumulative privacy budget (ε) depletes rapidly under continuous organizational querying [22].
+Zero-Knowledge Verifiable Retrieval: To counter untrusted server execution, recent cryptographic studies have attempted to apply Zero-Knowledge Proofs to database and vector queries. Li et al. [23] proposed ZKSQL, utilizing zero-knowledge polynomial commitments to verify relational SQL query evaluations; however, discrete relational set operations (joins, group-by, equality filters) cannot scale to continuous high-dimensional metric spaces where similarity is governed by floating-point inner products. For graph-based retrieval, Wu et al. [24] proposed ZKGraph, which decomposes graph queries into expansion-centric operators for zero-knowledge circuit evaluation, though this approach targets general graph databases and is not designed for dynamic HNSW proximity graphs [3, 24].
+
+Targeting vector RAG pipelines specifically, VeriRAG [7] formulated algorithm-specific zero-knowledge arguments to verify top-K ANN results without exposing the underlying dataset. Similarly, V3DB [8] standardized Inverted File with Product Quantization (IVF-PQ) search bound to cryptographic database snapshots via audit-on-demand zk-SNARKs. Concurrently, zkRAG [9] constructed a succinct zero-knowledge argument for HNSW-based retrieval over a committed database and index. While VeriRAG, V3DB, and zkRAG provide strong soundness guarantees, their proving cost remains substantial, and each paper reports its own figures: VeriRAG reports a prover time of 96 s and a verifier time of 3 s on a 37 GB dataset [7]; V3DB reports proving up to about 22× faster and peak memory up to about 40% lower than a circuit-only baseline, with millisecond-level verification [8]; and zkRAG reports about 50 s to prove a typical HNSW query over 10^6 vectors of dimension 128 on a single thread [9]. The closest competitor, VERIF [25], is a zero-knowledge proof system for IVF-Flat retrieval that proves retrieval over 32 million and 8 million vectors in 5.90 s and 11.57 s, with verification taking 0.62–1.48 s and peak memory up to 99.1% lower than a Plonky2 baseline. Unlike the framework proposed here, these systems prove the full retrieval computation, whereas this work verifies protocol compliance on the client. A comprehensive security taxonomy by Palanisamy et al. [4] further confirmed that existing RAG defenses remain fragmented across confidentiality, integrity, and availability pillars.
+
+Table 2.2 provides a detailed comparative summary of the core methodologies and operational drawbacks of these state-of-the-art frameworks relative to the proposed Asymmetric Verification Framework.
+
+Table 2.2: Comparative Summary of State-of-the-Art Privacy-Preserving and Verifiable RAG Frameworks
+
+Author(s) &amp; Year
+Framework
+Core Methodology
+Operational Drawbacks
+X. Li et al. (2023) [23]
+ZKSQL
+Zero-knowledge polynomial commitments for relational SQL queries.
+Strictly limited to structured relational
+ tables; cannot scale to 
+high-dimensional metric ANN search.
+Ye et al. (2026) [21]
+ppRAG
+Distance-preserving matrix encryption for cloud ANN search without FHE.
+Secures vector confidentiality only; 
+completely lacks retrieval integrity 
+and omission verification.
+Li et al. (2025) [6]
+S2MIA
+Black-box membership inference via semantic similarity of LLM outputs.
+Offensive vulnerability analysis only;
+ provides no cryptographic defense
+ architecture.
+Grislain (2024) [22]
+DP-RAG
+Calibrated differential privacy noise injection into LLM token logits.
+Degrades generative answer accuracy;
+ privacy budget exhausts under 
+repeated enterprise queries.
+H. Wu et al. (2025) [24]
+ZKGraph
+Expansion-centric operator decomposition of graph queries into zero-knowledge circuits.
+Extreme circuit compilation times;
+ incompatible with dynamic HNSW 
+vector proximity graphs.
+C. Lin et al. (2026) [7]
+VeriRAG
+Algorithm-specific zero-knowledge arguments for top-K ANN verification.
+High proof generation latency 
+(96 s prover, 3 s verifier on 37 GB); 
+proves the full retrieval 
+computation.
+Z. Qiu et al. (2026) [8]
+V3DB
+Audit-on-demand zk-SNARKs for standardized IVF-PQ vector snapshots.
+Heavy snapshot management 
+overhead; server must generate 
+a ZK proof for each audit.
+Y. Jiang et al. (2026) [9]
+zkRAG
+Succinct ZK argument for HNSW retrieval over a committed database and index.
+Server-side proving remains costly:
+ about 50 s per HNSW query
+ (10^6 vectors, d = 128).
+Z. Zhang et al. (2026) [25]
+VERIF
+Zero-knowledge PIOP proving complete IVF-Flat retrieval: centroid selection, routing, exact scoring, top-k and context binding.
+Server-side proof generation (5.90–11.57 s; verification 0.62–1.48 s); IVF-Flat only.
+B. Palanisamy et al. (2026) [4]
+RAG Survey
+Taxonomy of retrieval poisoning, embedding inversion, and cloud evasion.
+Survey study only; highlights that 
+existing defenses remain fragmented
+ across security pillars.
+Proposed Work
+Asymmetric Verifier
+Orthogonal masking Q, AES-256-GCM, Two-Tier MMR, and Voronoi DBV
+Simultaneously guarantees 
+confidentiality, integrity and 
+probed-cell compliance in &lt; 30 ms without 
+ZKPs.
+2.3 FOUNDATIONAL MATHEMATICAL AND CRYPTOGRAPHIC PRELIMINARIES
+To overcome the operational drawbacks listed in Table 2.2, the proposed Asymmetric Verification Framework synthesizes five foundational mathematical and cryptographic primitives:
+
+Merkle Mountain Ranges (MMR): Crosby and Wallach [12] introduced history trees for tamper-evident logging; the Merkle Mountain Range itself is Peter Todd's design [13], used for append-only commitments such as blockchain state. An MMR is an append-only collection of perfect binary Merkle trees ("mountains") arranged in strictly decreasing order of height. Because completed subtrees never change, inclusion proofs issued earlier stay valid as new leaves are appended, and MMRs support O(1) amortized leaf appending and O(log N) inclusion proof generation by "bagging" the peaks of individual mountains into a single 32-byte cryptographic root.
+Voronoi Tessellation and Inverted File (IVF) Indices: High-dimensional vector search engines partition the metric space ℝᵈ into C disjoint Voronoi cells Ψ₁, Ψ₂, …, Ψ_C governed by coarse quantizer centroids {μ₁, μ₂, …, μ_C} trained via K-Means clustering [2]. Formally, each cell Ψ_i contains all points in ℝᵈ closer to centroid μ_i than to any other centroid μ_j (j ≠ i). During multi-probe ANN search, a query vector probes the closest primary Voronoi centroid alongside adjacent boundary cells to prevent recall degradation near cell borders.
+Isometric Orthogonal Transformations: A real square linear operator Q ∈ ℝ^{d × d} belonging to the orthogonal group O(d) satisfies the algebraic identity Qᵀ Q = Q Qᵀ = I_d, where I_d is the d × d identity matrix and det(Q) = ±1. Because orthogonal transformations are Euclidean isometries, applying Q strictly preserves Euclidean vector norms (║Qu║₂ = ║u║₂) and inner products (⟨Qu, Qv⟩ = ⟨u, v⟩). Consequently, exact cosine similarity rankings can be evaluated directly within the transformed cloud domain while concealing raw semantic coordinates behind d(d-1)/2 continuous rotational degrees of freedom. In this work Q is the orthogonal factor of the QR decomposition of a random Gaussian matrix, with the column signs corrected using the diagonal of R so that Q is Haar-distributed (uniform on O(d)); this is what makes Q a properly random secret.
+AES-256-GCM Authenticated Encryption: Standardized in NIST Special Publication 800-38D [11], the Advanced Encryption Standard in Galois/Counter Mode (AES-256-GCM) provides Authenticated Encryption with Associated Data (AEAD). The cipher combines counter-mode (CTR) symmetric stream encryption using a 256-bit secret key and a 96-bit Initialization Vector (IV) with a 128-bit Galois Message Authentication Code (GMAC) tag computed over the universal hash function GHASH. Any unauthorized bit modification to the ciphertext or associated metadata invalidates the 128-bit GMAC tag prior to plaintext release.
+Corrective and Self-Reflective RAG Grounding: Even when retrieved document chunks are cryptographically authentic and complete, irrelevant or ambiguous passages can degrade LLM synthesis [14, 15]. Corrective RAG (CRAG) [15] evaluates the semantic relevance of retrieved chunks against the user query to filter out noisy context, while Self-RAG [14] incorporates self-reflection criteria to verify that generated statements are strictly supported by the retrieved evidence.
+2.4 LIMITATIONS OF EXISTING APPROACHES
+A critical synthesis of the literature reviewed in Sections 2.1 through 2.3 reveals five systemic gaps that prevent existing academic frameworks from achieving production readiness in enterprise cloud RAG environments:
+
+Fragmented Security Guarantees: Existing architectures treat confidentiality, integrity, and completeness as mutually exclusive design goals. Distance-preserving encryption schemes such as ppRAG [21] protect vector confidentiality against Vec2Text inversion [5] but provide zero defense against active chunk tampering or server-side partition dropping.
+Symmetric Trust Misalignment in ZKP Systems: Frameworks such as VeriRAG [7], V3DB [8], and zkRAG [9] assume a verifier with zero local storage capacity, forcing the untrusted cloud server to prove every floating-point multiplication inside an R1CS arithmetic circuit. In realistic enterprise deployments, the client gateway possesses sufficient local memory (tens of megabytes) to retain a 32-byte Merkle root and coarse Voronoi centroids, making heavy zero-knowledge circuit compilation entirely unnecessary.
+Vulnerability to Lazy-Cloud Cluster Omission: Partitioned ANN indices (IVF and HNSW) rely on multi-probe heuristics [2, 3]. Neither edge-cloud split architectures nor Merkle tree document stores verify whether the cloud server actually probed all required geometric boundary partitions, allowing cost-cutting cloud providers to silently degrade search recall.
+Rebalancing Bottlenecks in Static Merkle Trees: Conventional verifiable databases bind records using balanced binary Merkle trees or static snapshots (as in V3DB [8]), which require expensive tree reconstructions or snapshot recompilations whenever new enterprise documents are ingested.
+Absence of Multi-Tenant Cryptographic Isolation: Enterprise RAG deployments serve multiple organizational departments with strict access boundaries. Existing verifiable RAG schemes lack hierarchical tenant-to-enterprise cryptographic binding and fail to integrate pre-decryption access control with post-decryption hallucination filtering.
+CHAPTER 3: IDEA PROPOSED
+3.1 SYSTEM THREAT MODEL AND SECURITY ASSUMPTIONS
+The proposed framework models an untrusted commercial cloud service provider operating as an honest-but-curious or malicious adversary [4]. The cloud infrastructure retains arbitrary storage and compute capabilities but may attempt to eavesdrop on unmasked vectors, forge chunk ciphertexts, swap payload metadata, or lazily omit search partitions to minimize compute expenditures [4, 5]. The trusted client enclave operates as the sole cryptographic root of trust, retaining exclusive ownership of all encryption keys, orthogonal matrices, coordinate permutation vectors, and the master Enterprise MMR root [11, 12]. Table 3.1 details the material isolation and access permissions enforced across the trusted client enclave and the untrusted cloud vector engine.
+Table 3.1: Cryptographic Material Isolation Across Client and Cloud Trust Domains
+Cryptographic / Data Asset
+Trusted Client Enclave
+Untrusted Cloud Vector Engine
+Plaintext Document Chunks
+Full Read / Write / Decryption Access
+Zero Access (Encrypted via AES-256-GCM)
+Unmasked Dense Embeddings (u ∈ ℝᵈ)
+Generated locally via BAAI/bge-small
+Zero Access (Transformed via Q and π)
+Orthogonal Matrix Q &amp; Permutation π
+Retained in isolated enclave RAM
+Zero Access (Cryptographic Secret Key)
+256-bit Symmetric Key K_AES
+Retained in isolated enclave RAM
+Zero Access (Cryptographic Secret Key)
+Master Enterprise MMR Root R_ent
+Anchored locally (32-byte digest)
+Stores structural mirror peaks only
+Voronoi Coarse Centroids μ_i
+Retained locally for DBV auditing
+Used for server-side IVF cell routing
+3.2 OVERVIEW OF THE ASYMMETRIC VERIFICATION FRAMEWORK
+The proposed framework decouples RAG operations into an offline document ingestion phase and an online query verification phase, orchestrated across six modular pipelines. Figure 3.1 presents the end-to-end system architecture across the trusted client enclave and untrusted cloud database tiers.
+
+Fig 3.1: End-to-End Architecture of the Asymmetric Verification Framework Across Client and Cloud
+Table 3.2 delineates the modular specifications, functional roles, and execution locations across the six core pipelines.
+Table 3.2: Specification of the Six Modular Pipelines in the Asymmetric Verification Framework
+Module Pipeline
+Execution Location
+Core Functional Responsibilities
+Module 1: Local Ingestion
+Trusted Client Enclave
+Hierarchical parent-child document parsing and bidirectional metadata linking.
+Module 2: Privacy Engine
+Trusted Client Enclave
+Local BGE-small dense embedding, orthogonal Q masking, coordinate permutation π, and AES-256-GCM encryption [10, 11].
+Module 3: Two-Tier MMR Builder
+Trusted Client Enclave
+Constructs Tier 1 User MMRs and Tier 2 Enterprise MMR, anchoring 32-byte master root R_ent locally [12, 13].
+Module 4: Cloud Search Tier
+Untrusted Cloud Server
+Multi-probe ANN search over orthogonally masked vectors stored in Voronoi IVF and HNSW graph indices [2, 3].
+Module 5: Dynamic Boundary Validation
+Trusted Client Enclave
+Audits multi-probe search completeness by checking local Voronoi centroid distances against a 1.5 × r_closest expansion margin.
+Module 6: Five-Gate Verifier
+Trusted Client Enclave
+Enforces RBAC, MMR proof auditing, DBV completeness, AEAD tag decryption, and CRAG/Self-RAG reflection before LLM synthesis [14, 15].
+3.3 PHASE A: LOCAL INGESTION, HIERARCHICAL CHUNKING, AND PRIVACY TRANSFORMATION
+During Phase A, Module 1 parses multi-format enterprise files into coarse parent chunks (800–1,200 characters) to preserve contextual coherence during LLM prompt synthesis, alongside fine child chunks (200–300 characters) for high-precision vector retrieval. Module 2 embeds child chunks into L2-normalized 384-dimensional vectors using models such as BAAI/bge-small-en-v1.5 or all-MiniLM-L6-v2 [10], masks vectors via a secret orthogonal matrix Q and coordinate permutation π [18], and encrypts text payloads using AES-256-GCM authenticated encryption [11]. Figure 3.2 illustrates the hierarchical parent-child document segmentation and bidirectional metadata linking.
+
+
+
+Fig 3.2: Hierarchical Parent-Child Document Segmentation and Bidirectional Metadata Linking
+3.4 PHASE A: TWO-TIER MERKLE MOUNTAIN RANGE TRUST STRUCTURE BUILDER
+Module 3 constructs an append-only Two-Tier Merkle Mountain Range (MMR) structure to bind document payloads and metadata into tamper-evident cryptographic commitments [12, 13]. Tier 1 consists of per-tenant User MMRs, whose mountain peaks are bagged into a global Tier 2 Cloud Enterprise MMR anchored by a single 32-byte master root R_ent held strictly inside the client enclave [12, 13]. Equation (3.1) defines the domain-separated user root formula, and Equation (3.2) specifies the enterprise root obtained by bagging the user roots:
+R_user = SHA-256("USER_MMR_v1" || tenant_id || Bag(Peaks_user))(3.1)
+R_ent = SHA-256("ENT_MMR_v1" || Bag(R_user_1 || R_user_2 || ... || R_user_M))(3.2)
+Figure 3.3 details the Two-Tier MMR peak-bagging workflow and cloud mirror synchronization [12, 13].
+
+
+Fig 3.3: Two-Tier Merkle Mountain Range (MMR) Peak Bagging and Cloud Mirror Synchronization
+3.5 PHASE B: CLOUD MULTI-PROBE ANN SEARCH AND DYNAMIC BOUNDARY VALIDATION
+In Phase B, Module 4 executes multi-probe ANN vector search over orthogonally masked vectors on the untrusted cloud vector database [2, 3]. To audit the search without relying on server-side zero-knowledge proofs, Module 5 executes Voronoi Dynamic Boundary Validation (DBV) within the client enclave. Because the client holds the coarse-quantizer centroids, it can compute the exact cosine distance from the query vector to every centroid and derive the set of cells that must be probed: every cell whose centroid lies within the dynamic margin r_margin = 1.5 × r_closest. Knowing which cells should be probed is not enough, because a lazy cloud could simply report every required cell ID without scanning anything. DBV therefore requires verifiable evidence for each required cell.
+Evidence returned by the cloud: the cloud keeps, for every IVF cell, a membership list committed under the MMR whose root the client holds. For each probed cell it returns that cell's best-scoring candidate together with an inclusion proof against the cell's committed membership, and the client checks that every required cell has valid evidence and that the returned top-K is consistent with the per-cell candidates. Optionally, the client also issues random spot-check challenges to cells it has chosen at random. 
+Scope of the guarantee: DBV verifies protocol compliance — that the agreed set of cells was probed and evidenced — not that the exact global top-K was returned. A margin of 1.5 × d_min does not by itself guarantee that all true top-K neighbours lie in the checked cells, so recall is measured empirically (Section 5.3). HNSW graphs have no Voronoi cells, so DBV applies only to IVF-partitioned indices; the HNSW backend is used without the DBV check.
+3.6 PHASE B: FIVE-GATE SEQUENTIAL CLIENT VERIFIER AND GROUNDED SYNTHESIS
+Module 6 enforces a deterministic five-gate verifier before releasing candidate passages to the generative LLM [14, 15]: Gate 1 verifies HMAC-signed session tokens carrying tenant and role claims; Gate 2 audits Two-Tier MMR inclusion proofs against local root R_ent; Gate 3 checks Voronoi DBV cell coverage; Gate 4 validates AES-256-GCM 128-bit GMAC tags; and Gate 5 evaluates CRAG relevance and Self-RAG reflection scores [14, 15]. Responses passing all five gates are decrypted and injected into the LLM context window for grounded answer generation [14, 15].
+Tenant isolation on the cloud side: each tenant's vectors are stored in a separate collection, and the cloud rejects any search whose token does not authorize that collection, so that other tenants' data is never searched; Gate 1 then confirms on the client that every returned chunk belongs to the requesting tenant. 
+CHAPTER 4: MATHEMATICAL FORMULATIONS AND SECURITY ANALYSIS
+4.1 ISOMETRIC ORTHOGONAL VECTOR MASKING AND INNER-PRODUCT PRESERVATION
+To protect semantic vectors against embedding inversion attacks such as Vec2Text while enabling low-latency similarity evaluation on untrusted cloud servers, the client enclave applies an isometric orthogonal transformation matrix Q in O(384) derived via Householder QR decomposition, paired with a secret coordinate permutation matrix P_π [18]. For any dense embedding vector v in ℝᵈ, the masked vector v' = P_π Q v strictly preserves Euclidean norms and inner products, satisfying Equation (4.1):
+⟨u', v'⟩ = (P_π Q u)ᵀ (P_π Q v) = uᵀ Qᵀ (P_πᵀ P_π) Q v = uᵀ Qᵀ I_d Q v = uᵀ I_d v = ⟨u, v⟩(4.1)
+Consequently, cosine similarity rankings on the cloud remain identical to those in the unencrypted domain [18]. Table 4.1 summarizes the mathematical notation and cryptographic parameters utilized across the verification engine [11, 18].
+Security scope of the masking: because P_π is itself orthogonal, the product P_π Q is just another orthogonal matrix, so the permutation adds no security beyond that of Q alone. The masking protects against an adversary who sees only masked data (a ciphertext-only model). It does not protect against a known-plaintext attack: an insider who can embed about d = 384 documents known to be in the corpus (for example public policies or templates) obtains 384 pairs of original and masked vectors, from which Q can be recovered by orthogonal Procrustes analysis in milliseconds; every stored vector can then be unmasked and passed to an inversion attack such as Vec2Text [5]. In addition, the cloud still observes every pairwise similarity and the masked centroids, which leaks cluster structure. Noisy schemes such as approximate distance-comparison-preserving encryption (DCPE) are a possible mitigation at some cost in recall.
+Table 4.1: Mathematical Notation and Cryptographic Parameters of the Verification Engine
+Symbol / Parameter
+Mathematical Domain
+Cryptographic / Operational Definition
+u, v
+ℝ³⁸⁴
+Unmasked dense semantic embedding vectors [10]
+Q
+O(384) ⊂ ℝ³⁸⁴ × ³⁸⁴
+Isometric orthogonal matrix derived via Householder QR [18]
+π
+S_384
+Secret coordinate permutation symmetric group operator
+K_AES
+{0, 1}²⁵⁶
+256-bit symmetric secret key for AES-GCM AEAD cipher [11]
+R_ent
+{0, 1}²⁵⁶
+32-byte master Tier 2 Cloud Enterprise MMR root digest [12]
+r_margin
+ℝ⁺
+Dynamic boundary expansion radius (1.5 × r_closest)
+4.2 TWO-TIER MERKLE MOUNTAIN RANGE INCLUSION PROOF CONSTRUCTION
+To guarantee payload authenticity without server-side zero-knowledge arithmetic circuits, the framework maintains an append-only Two-Tier Merkle Mountain Range (MMR) [12, 13]. Tier 1 comprises per-tenant User MMRs whose peak hashes are bagged into a global Tier 2 Cloud Enterprise MMR anchored by a 32-byte master root R_ent held strictly inside the client enclave [12, 13]. Figure 3.3 illustrates the structural peak bagging and hierarchy linking tenant MMRs to the master enterprise root [12, 13].
+Leaf binding: each child chunk is bound to its tenant's MMR by the leaf digest of Equation (4.2), which hashes the chunk identifiers and the plaintext hash under a domain-separation tag; an inclusion proof is the list of sibling hashes from the leaf to its mountain peak, followed by the other peaks needed to bag the root (O(log N) hashes). 
+leaf = SHA-256("LEAF_v1" ‖ tenant_id ‖ chunk_id ‖ H(plaintext))(4.2)
+Associated data: AES-256-GCM is invoked with (tenant_id ‖ chunk_id) as associated data, so a valid ciphertext cannot be moved into another chunk's slot or another tenant's collection without invalidating its GMAC tag. 
+Updates and rollback detection: after each ingestion batch the client appends the new leaves, recomputes R_ent and stores it locally together with a monotonically increasing epoch number. Every cloud response carries the MMR size and epoch it was computed under; the client rejects a response with an epoch lower than the stored one (replay of an older state) and checks with an append-only consistency proof that the old root is a prefix of the new one. 
+4.3 VORONOI DYNAMIC BOUNDARY VALIDATION (DBV) FORMULATION
+To audit whether an untrusted cloud vector database executes complete multi-probe searches across partitioned Inverted File (IVF) cells without lazily dropping adjacent clusters, the framework formulates Voronoi Dynamic Boundary Validation (DBV). Given a query vector q and coarse-quantizer centroids {μ_1, ..., μ_C}, the client computes exact cosine distances to all centroids locally. Equation (4.3) enforces a dynamic margin expansion threshold, where d(q, μ) = 1 − cos(q, μ) is the cosine distance and r_closest is the distance to the nearest centroid:
+r_margin = 1.5 × r_closest,   r_closest = min_i d(q, μ_i),   d(q, μ) = 1 − cos(q, μ)(4.3)
+Figure 4.1 illustrates the geometry of Voronoi DBV boundary auditing. The set of required cells is S_req = { i : d(q, μ_i) ≤ r_margin }, and the verifier accepts a response only if every cell in S_req carries valid evidence (Section 3.5).
+
+Fig 4.1: Geometric Illustration of Voronoi Dynamic Boundary Validation (DBV) with Margin Expansion
+
+Fig 4.2: Five-Gate Sequential Client Verification Workflow Mapped to Adversarial Threat Scenarios
+4.4 FORMAL SECURITY ANALYSIS AGAINST ADVERSARIAL THREAT CAPABILITIES
+The sequential five-gate client verifier maps directly to the five adversarial threat vectors (TV-01 through TV-05) identified in Section 1.2 (see Figure 4.2):
+Gate 1 (RBAC Tenant Isolation): Validates cryptographic authorization tokens to block cross-tenant privilege escalation (TV-04).
+Gate 2 (Two-Tier MMR Integrity): Audits inclusion proofs against local root R_ent to detect bit-level chunk forgery and cross-document splicing (TV-02) [12].
+Gate 3 (Voronoi DBV Completeness): Verifies multi-probe cell coverage to neutralize lazy-cloud cluster omission (TV-03).
+Gate 4 (AES-256-GCM AEAD Decryption): Validates 128-bit GMAC tags prior to plaintext release, detecting any modification of the ciphertext or its associated data (TV-02) [11]. Eavesdropping and inversion (TV-01) are addressed by the orthogonal masking and AES-256-GCM encryption applied at ingestion, not by this gate.
+Gate 5 (CRAG / Self-RAG Grounding): Evaluates the semantic relevance of the verified chunks before they are passed to the generative LLM, filtering irrelevant context [14, 15].  TV-05 is addressed by the design as a whole, which replaces server-side zero-knowledge proving with client-side verification, not by this gate.
+CHAPTER 5: EXPERIMENTAL EVALUATION AND PERFORMANCE ANALYSIS
+5.1 IMPLEMENTATION ENVIRONMENT AND EXPERIMENTAL SETUP
+The client enclave and verification engine were implemented in Python 3.11 using FastAPI, PyTorch, NumPy, scikit-learn, and the cryptography library, interfacing with Qdrant and FAISS vector backends. Micro-benchmarks were executed on commodity CPU hardware (Intel Core i7, 16 GB RAM) without specialized GPU proving clusters. Dense embeddings were generated using 384-dimensional transformer models such as BAAI/bge-small-en-v1.5 and all-MiniLM-L6-v2 [10]. Table 5.1 details the hardware, software, and cryptographic implementation parameters.
+Table 5.1: Hardware, Software, and Cryptographic Implementation Specifications
+Parameter Category
+System Specification &amp; Configuration
+Client Enclave Environment
+Python 3.11, FastAPI, PyTorch 2.1, NumPy, scikit-learn, cryptography 41.0
+Vector Backend &amp; Model
+Qdrant v1.7, FAISS; BAAI/bge-small-en-v1.5 / all-MiniLM-L6-v2 (384-dimensional dense vectors) [10]
+Cryptographic Primitives
+Householder QR orthogonal matrix Q in O(384), AES-256-GCM, SHA-256 Two-Tier MMR [11, 12, 18]
+Hardware Benchmark Platform
+ Commodity x86_64 CPU @ 3.40 GHz, 16 GB DDR4 RAM (No dedicated GPU prover)
+5.2 PRELIMINARY BENCHMARKING: ZK-SNARK BASELINES VS. TWO-TIER MMR
+Micro-benchmarks comparing the proposed Asymmetric Verification Framework against state-of-the-art zero-knowledge verifiable RAG baselines (VeriRAG [7], V3DB [8], zkRAG [9]) are reported in Table 5.2. The baseline figures are those reported by each system's authors and were not reproduced on the hardware used here. They measure the time for a server to prove that a retrieval was computed correctly, whereas the figures for the proposed verifier measure client-side checking of protocol evidence; the two do different jobs and are therefore not directly comparable.
+Table 5.2: Performance Comparison Between zk-SNARK Baselines and the Proposed Asymmetric Framework
+Verification System
+Reported proving / verification time
+Reported memory
+Note
+VeriRAG (ZKP) [7]
+Prover 96 s; verifier 3 s (37 GB dataset)
+Not compared
+Reported by authors; not reproduced
+V3DB (IVF-PQ ZKP) [8]
+Millisecond-level verification; proving up to ~22× faster than a circuit-only baseline
+Up to ~40% lower peak memory than the circuit-only baseline
+Reported by authors; not reproduced
+zkRAG (HNSW, succinct ZK) [9]
+≈ 50 s to prove one HNSW query (10^6 vectors, d = 128, single thread)
+Not compared
+Reported by authors; not reproduced
+VERIF (IVF-Flat PIOP) [25]
+Proving 5.90 s (32 M vectors) and 11.57 s (8 M vectors, d = 768); verification 0.62–1.48 s
+Up to 99.1% lower peak memory than a Plonky2 baseline
+Reported by authors; not reproduced
+Proposed Asymmetric Verifier
+2.15 ms (normal) / 0.15–0.86 ms (abort); client-side verification only
+&lt; 250 MB RAM
+Different task: checks protocol evidence rather than proving full retrieval; not directly comparable
+5.3 MULTI-SCENARIO ADVERSARIAL EVALUATION (SCN-01 TO SCN-04)
+The Five-Gate Verification Pipeline was evaluated across four operational scenarios spanning normal retrieval and active threat conditions. Table 5.3 summarizes the empirical detection rates and latency breakdowns across operational scenarios SCN-01 through SCN-04:
+SCN-01 (Normal Execution): Honest cloud search returning authentic chunks and complete Voronoi boundary cells. Passes all five gates in 2.15 ms with Recall@5 = 94.2%.
+SCN-02 (Bit-Level Payload Tampering): Adversarial bit-flip injected into ciphertext payload. Aborted in 0.86 ms with 100% detection. Because Gate 2 runs before Gate 4, the tampered ciphertext fails MMR inclusion at Gate 2 first [11, 12].
+SCN-03 (Lazy-Cloud Cluster Omission): Cloud server skips mandatory adjacent Voronoi cells. Aborted at Gate 3 (Voronoi DBV) in 0.45 ms with 100% omission detection.
+SCN-04 (Cross-Tenant Intrusion): Unauthorized session token attempting access to restricted tenant collection. Aborted at Gate 1 (RBAC) in 0.15 ms with zero false acceptances.
+Table 5.3: Empirical Evaluation of the Five-Gate Verification Pipeline Across Operational Scenarios
+Scenario ID
+Operational Condition
+Target Verification Gate
+Detection Rate
+Latency
+SCN-01
+Normal Honest Retrieval
+Passes Gates 1 - 5
+N/A (Legitimate)
+2.15 ms
+SCN-02
+Payload Bit-Tampering
+Gate 2 (MMR); Gate 4 as backstop
+100% Detection
+0.86 ms
+SCN-03
+Lazy Cluster Omission
+Gate 3 (Voronoi DBV)
+100% Omission Det.
+0.45 ms
+SCN-04
+Cross-Tenant Intrusion
+Gate 1 (RBAC Authentication)
+0% False Accept
+0.15 ms
+5.4 DISCUSSION OF EXPERIMENTAL FINDINGS, LIMITATIONS, AND CONCLUSION
+System Limitations: (i) Dynamic Centroid Maintenance: Periodic K-Means re-clustering is required as the corpus expands by orders of magnitude; (ii) Text-Only Vector Scope: Current orthogonal transformations are optimized for 384-dimensional text embeddings, with multi-modal expansion designated for future work [10].
+Additional limitations: (iii) Known-plaintext attack on the masking: an insider who embeds about 384 documents known to be in the corpus obtains enough original–masked pairs to recover Q by orthogonal Procrustes analysis, after which every stored vector can be unmasked; the guarantee therefore holds only in a ciphertext-only model, and noisy schemes such as approximate distance-comparison-preserving encryption (DCPE) are a possible mitigation. (iv) Leakage to the cloud: the cloud observes access patterns, all pairwise similarities between masked vectors and the masked centroids, which leaks cluster structure. (v) Trust placed in the client: all keys and the root R_ent reside in the client enclave, so a compromised client defeats the scheme. (vi) Freshness: the client must detect rollback of the MMR state to an older root (Section 4.2).
+Conclusion: The Asymmetric Verification Framework suggests, on the four scenarios evaluated here, that an enterprise cloud RAG system can obtain confidentiality against a ciphertext-only adversary, tamper-evident integrity and probed-cell compliance checking without zero-knowledge proving, at a client-side verification cost of a few milliseconds. The prototype is a foundation for further work on secure enterprise RAG rather than a production-ready system.
+CHAPTER 6: RESULT ANALYSIS
+6.1 OVERVIEW OF SYSTEM IMPLEMENTATION AND VALIDATION WORKFLOW
+To validate the practical feasibility of the proposed Asymmetric Verification Framework, the end-to-end prototype was deployed and inspected across both the untrusted cloud storage tier and the trusted client verification interface. The cloud storage backend is orchestrated using the Qdrant v1.19.1 vector engine (localhost:6333), which manages multi-tenant vector collections, Hierarchical Navigable Small World (HNSW) proximity graphs, and encrypted document payloads. The trusted client enclave is exposed through a FastAPI-powered web application (RAG Document Verifier running on 127.0.0.1:8000), which handles local document ingestion, 384-dimensional dense embedding generation (BAAI/bge-small-en-v1.5), isometric orthogonal vector masking, Two-Tier Merkle Mountain Range (MMR) root anchoring, and the Five-Gate Sequential Verification Pipeline.
+This chapter analyzes the empirical outputs captured from the live system across four core operational dimensions:
+Physical and logical isolation of tenant vector collections within the Qdrant engine.
+Cryptographic payload encapsulation, binding AES-256-GCM ciphertexts, SHA-256 leaf digests, Two-Tier MMR sibling proof paths, and fine-grained Access Control Lists (ACLs).
+Preservation of metric distance relationships and HNSW graph navigability over orthogonally masked embeddings.
+Real-time client-side verification comparing authorized grounded retrieval against blocked cross-tenant privilege escalation attempts.
+6.2 MULTI-TENANT VECTOR COLLECTION ISOLATION IN QDRANT
+In a multi-tenant enterprise environment, storing vectors from distinct organizational departments within a single shared index introduces the risk of cross-tenant data leakage (Threat Vector TV-04). To enforce strict structural separation on the cloud tier, the framework provisions dedicated Qdrant collections for each tenant organization during Phase A ingestion.
+
+   Fig 6.1: Qdrant Web UI Dashboard Showing Isolated Multi-Tenant Vector Collections
+As illustrated in Fig 6.1, the Qdrant Web UI dashboard displays active, isolated collections corresponding to distinct enterprise tenants, including org_1_collection (7 vector points), org_10_collection (4 vector points), org_2_collection (22 vector points), org_3_collection (4 vector points), and org_4_collection (4 vector points). Every collection operates with a GREEN health status and is standardized on 384-dimensional vectors (Default 384 Cosine) partitioned across 6 segments and 1 shard. Because the client enclave masks every 384-dimensional BAAI/bge-small-en-v1.5 vector via the secret orthogonal transformation v'=PπQv prior to upload, the Qdrant engine indexes and evaluates cosine similarity directly on masked coordinates without gaining access to the underlying semantic representations.   
+6.3 CRYPTOGRAPHIC PAYLOAD STRUCTURE AND FINE-GRAINED ACL BINDING
+When an enterprise document is ingested into the client enclave, Module 1 segments the file into hierarchical parent-child chunks, while Module 2 encrypts the plaintext using AES-256-GCM before transmitting the payload to Qdrant. Inspecting an individual vector point inside the Qdrant dashboard confirms that zero cleartext content is exposed to the cloud operator.
+
+Fig 6.2: Qdrant Point Payload Inspection Showing AES-256-GCM Ciphertext and Chunk Metadata 
+Fig 6.2 depicts the internal JSON payload of Point 23cdb4c6-e331-4d74-ba02-e0d5d04e6b86 stored within Qdrant. The payload encapsulates the following security and structural fields:
+Hierarchical Identifiers (chunk_id, doc_id, parent_doc_id): Binds child chunk chk_sriram10_doc_23i365_sriram_r_resume_3_ (with chunk_index: 1 and tokens: 74) back to its parent document doc_23i365_sriram_r_resume_3_ (23i365_Sriram_R_Resume (3).pdf) for context synthesis.
+Authenticated Ciphertext (encrypted_content and nonce): Stores the Base64-encoded AES-256-GCM ciphertext ("62n1nANPUHqhCbhYSnT39XzsJXe/xoWGwci4OKikir/q8OMJrN...") alongside its unique 96-bit initialization vector (nonce: "EAr2HugPpVGvcp21"), neutralizing passive cloud eavesdropping and plaintext harvesting (TV-01).
+Cryptographic Digest (chunk_hash): Records the SHA-256 digest ("dbd7cdf97c30ff919a0fd3a8272de75f0b7cf8d0b2ce770be9...") of the chunk to bind the payload into the Two-Tier MMR leaf construction.
+
+Fig 6.3: Fine-Grained Access Control List (ACL) Binding Within Custom Payload Attributes 
+Furthermore, as shown in Fig 6.2 and detailed in the close-up view in Fig 6.3, each vector point embeds a custom_attributes dictionary containing an explicit Access Control List (acl). In Fig 6.2 (default_org), the ACL array restricts access strictly to ["sriram10", "org_admin_default_org"], whereas in Fig 6.3 (org 2), the ACL array binds permissions to ["sriram20", "org_admin_org 2"]. During Phase B retrieval, these attributes are cross-checked against the requesting user's session token at Gate 1 (RBAC) and bound into the AES-256-GCM associated data (tenant_id || chunk_id) at Gate 4, ensuring that an attacker cannot transplant ciphertexts across users or organizations. 
+6.4 VECTOR SPACE PROJECTION AND HNSW PROXIMITY GRAPH ANALYSIS
+A foundational mathematical property of the proposed framework is that isometric orthogonal matrix masking (QTQ=Id) strictly preserves inner products and cosine similarity rankings:  ⟨uv'⟩ = ⟨uv⟩ Consequently, the untrusted cloud server can construct high-dimensional proximity structures and compute distance matrices over masked vectors without accuracy loss.
+
+Fig 6.4: Server-Side Distance Matrix Configuration for High-Dimensional Vector Visualization 
+
+Fig 6.5: 2D Projected Vector Space and Two-Tier MMR Proof Path Inspection (org_1_collection) 
+Fig 6.4 and Fig 6.5 illustrate the dimensionality reduction and vector space visualization of org_1_collection inside Qdrant. As noted in the query configuration in Fig 6.4 ("limit": 2000), pairwise cosine distances between masked points are computed server-side via Qdrant's Distance Matrix API using dimensionality reduction algorithms such as UMAP, t-SNE, and PCA. The resulting 2D projection in Fig 6.5 confirms that relative geometric distances between document chunks remain intact after orthogonal masking. Selecting point 2bad7c05-efee-4634-bc04-8c4bc3c8ad9f in the Data Panel (Fig 6.5) reveals the complete cryptographic audit trail stored in the cloud mirror alongside the vector: 
+
+leaf_hash: "f621eb7191afd3fddc1b2c5a85183e96567983601c8cbd308c...", computed via domain-separated SHA-256 hashing over the tenant ID, chunk ID, and plaintext hash.
+proof_path: Contains the hierarchical Two-Tier MMR inclusion evidence, specifically the Tier 1 tenant sibling path (user_proof), the Tier 2 enterprise peak-bagging path (cloud_proof), and the expected_cloud_root ("9a27fea7754696f7562d9b6a090ec0ca48175e16bf11fd6723...")
+
+Fig 6.6: HNSW Proximity Graph Topology and Cryptographic Proof Path (org_2_collection) 
+
+To further validate graph-based Approximate Nearest Neighbor (ANN) routing over masked vectors, Fig 6.6 displays the interactive Hierarchical Navigable Small World (HNSW) proximity graph generated for org_2_collection around Point 03354206-66f6-42d4-8760-02c960f4ea14 (chunk_id: "chk_sriram20_doc_23i365_sriram_r_resume__3__2"). In the left graph pane of Fig 6.6, the target chunk (highlighted as the central orange node) is connected via directed proximity edges to six nearest-neighbor candidate nodes (teal vertices). Because orthogonal transformations are Euclidean isometries, HNSW greedy graph routing traverses these edges identically to an unmasked index. Simultaneously, the right Data Panel of Fig 6.6 shows the point's leaf_hash ("cc3263b8015c40ed26689779bf97c6b46c2541d617aba56b20...") and its tenant-specific expected_cloud_root ("86df6a81f57e4505578c03411c0395444470e8273c90df40a1..."), enabling immediate O(log N) inclusion verification upon retrieval. 
+
+6.5 END-TO-END VERIFIED RETRIEVAL AND CROSS-TENANT ACCESS BLOCKING
+During Phase B (Online Query, Retrieval, and Verification), user queries submitted through the RAG Document Verifier client interface are embedded locally, masked with Q and π, and dispatched to the target Qdrant collection. Every candidate response returned by the cloud must pass sequentially through the Five-Gate Client Verifier before context is released to the generative LLM.
+
+
+Fig 6.7: Authorized Query Execution and Grounded Answer Synthesis in the RAG Document Verifier 
+Fig 6.7 demonstrates a legitimate retrieval workflow corresponding to Scenario SCN-01 (Normal Honest Execution). In this session, authenticated user sriram20 (with Role: MEMBER, Organization: Org 2, and Status: Approved) submits the natural language query "tell about the career objective" against organization collection org_2 (containing 2 ingested documents and 22 chunks). The client verifier validates the user's RBAC session privileges (Gate 1), confirms the Two-Tier MMR inclusion proofs against the local enterprise root (Gate 2), verifies boundary completeness (Gate 3), decrypts the AES-256-GCM ciphertexts using the local 256-bit key KAES (Gate 4), and checks contextual relevance (Gate 5). As indicated by the status badge in Fig 6.7, all 22 Chunks Verified successfully with a total end-to-end retrieval, verification, and synthesis latency of 137.9 ms, producing a factually grounded response extracted directly from the decrypted resume chunks. 
+
+Fig 6.8: Cross-Tenant Intrusion Detection and Access Blocking at Gate 1 (RBAC Enforcement) 
+Conversely, Fig 6.8 demonstrates the framework's defense against Scenario SCN-04 (Cross-Tenant Privilege Escalation / Intrusion). Here, authenticated user sriram10—who holds MEMBER privileges strictly within Default Org—attempts to query restricted collection org_2 with the prompt "retrive the company details". Gate 1 (RBAC &amp; Tenant Isolation) intercepts the request by detecting the mismatch between the session token's organization claim (Default Org) and the target collection (org_2), reinforced by the chunk-level ACL policy. As shown in Fig 6.8, the pipeline immediately aborts execution within 137.64 ms (round-trip API and client check), displaying the status badge Access Blocked (0 Chunks) and raising the explicit security alert: "Cross-Tenant Access Blocked: Access Denied: Cross-tenant isolation block. User 'sriram10' does not have authorization to access documents in 'org_2'". Zero ciphertexts are decrypted and zero context tokens reach the downstream LLM, guaranteeing complete multi-tenant isolation. 
+
+6.6 SUMMARY OF RESULT ANALYSIS
+Table 6.1 summarizes the operational results verified across the Qdrant storage engine and the RAG Document Verifier client application, mapping each empirical observation to the corresponding security module and mitigated threat vector.
+Table 6.1: Summary of Operational Result Verification Across Cloud Storage and Client Interface Modules
+
+System View / Figure
+Inspected Component
+Empirical Observation in Prototype
+Mitigated Threat Vector
+Fig 6.1 (Qdrant Collections UI)
+Multi-Tenant Index Partitioning
+Separate 384-d Cosine collections (org_1 to org_10) isolate tenant vector spaces.
+TV-04: Cross-Tenant Privilege Escalation
+Fig 6.2 &amp; Fig 6.3 (Point Payload &amp; ACL)
+AES-256-GCM &amp; Custom Attributes
+Plaintext is fully replaced by Base64 ciphertext, 96-bit nonce, SHA-256 hash, and principal ACL array.
+TV-01 &amp; TV-02: Eavesdropping &amp; Chunk Splicing
+Fig 6.4 &amp; Fig 6.5 (Vector Projection)
+Orthogonal Masking &amp; MMR Proof Path
+UMAP/PCA scatter plots preserve distance geometry; payload retains leaf_hash, user_proof, and cloud_proof.
+TV-01 &amp; TV-02: Embedding Inversion &amp; Tampering
+Fig 6.6 (HNSW Graph View)
+Navigable Small-World Graph Routing
+Masked vector 03354206... maintains exact directed HNSW neighbor edges alongside root commitment 86df6a81....
+TV-03 &amp; TV-05: Search Completeness Without ZKP Bottlenecks
+Fig 6.7 (Verifier UI - Authorized)
+Five-Gate Normal Execution (SCN-01)
+User sriram20 (Org 2) verifies 22 chunks in org_2 and receives grounded LLM output in 137.9 ms.
+TV-05: Sub-Second Interactive RAG Verification
+Fig 6.8 (Verifier UI - Unauthorized)
+Gate 1 RBAC Interception (SCN-04)
+User sriram10 (Default Org) querying org_2 is blocked with 0 chunks released in 137.64 ms.
+TV-04: Unauthorized Cross-Organization Access
+
+As demonstrated across Fig 6.1 through Fig 6.8 and synthesized in Table 6.1, the deployed prototype confirms that combining isometric orthogonal vector masking, AES-256-GCM authenticated encryption, Two-Tier MMR inclusion proofs, and multi-tenant RBAC verification achieves rigorous end-to-end security while maintaining interactive sub-150 ms full-stack query turnaround. 

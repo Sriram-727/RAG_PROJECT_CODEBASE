@@ -1,0 +1,692 @@
+"""Builds the IJCC manuscript (.docx) from results.json and the figures. Run from the repo root:
+    python journal_paper/build_paper.py
+"""
+import json
+import os
+import re
+
+from docx import Document
+from docx.enum.section import WD_ORIENT
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_BREAK
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Cm, Pt, RGBColor
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FIGS = os.path.join(HERE, "paper_figures")
+R = json.load(open(os.path.join(HERE, "experiments", "results.json")))
+FONT = "Times New Roman"
+
+doc = Document()
+sec = doc.sections[0]
+sec.page_width, sec.page_height = Cm(21.0), Cm(29.7)
+sec.left_margin = sec.right_margin = Cm(2.5)
+sec.top_margin, sec.bottom_margin = Cm(2.5), Cm(2.3)
+
+st = doc.styles["Normal"]
+st.font.name, st.font.size = FONT, Pt(11)
+st.element.rPr.rFonts.set(qn("w:eastAsia"), FONT)
+st.paragraph_format.space_after = Pt(6)
+st.paragraph_format.line_spacing = 1.12
+for name, size in (("Heading 1", 12.5), ("Heading 2", 11.5), ("Heading 3", 11)):
+    h = doc.styles[name]
+    h.font.name, h.font.size, h.font.bold = FONT, Pt(size), True
+    h.font.italic = name == "Heading 3"
+    h.font.color.rgb = RGBColor(0, 0, 0)
+    h.element.rPr.rFonts.set(qn("w:eastAsia"), FONT)
+    h.element.rPr.rFonts.set(qn("w:ascii"), FONT)
+    h.element.rPr.rFonts.set(qn("w:hAnsi"), FONT)
+    for a in ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme"):
+        k = qn("w:" + a)
+        if k in h.element.rPr.rFonts.attrib:
+            del h.element.rPr.rFonts.attrib[k]
+    h.paragraph_format.space_before = Pt(12 if name == "Heading 1" else 8)
+    h.paragraph_format.space_after = Pt(4)
+    h.paragraph_format.keep_with_next = True
+
+TOKEN = re.compile(r"(\*\*.+?\*\*|\*.+?\*|_\{.+?\}|\^\{.+?\})")
+
+
+def runs(p, text, size=None, bold=None, italic=None):
+    for part in TOKEN.split(text):
+        if not part:
+            continue
+        if part.startswith("**"):
+            r = p.add_run(part[2:-2]); r.bold = True
+        elif part.startswith("*") and part.endswith("*") and len(part) > 2:
+            r = p.add_run(part[1:-1]); r.italic = True
+        elif part.startswith("_{"):
+            r = p.add_run(part[2:-1]); r.font.subscript = True
+        elif part.startswith("^{"):
+            r = p.add_run(part[2:-1]); r.font.superscript = True
+        else:
+            r = p.add_run(part)
+        r.font.name = FONT
+        if size:
+            r.font.size = Pt(size)
+        if bold is not None and not part.startswith("**"):
+            r.bold = bold
+        if italic is not None and not (part.startswith("*") and not part.startswith("**")):
+            r.italic = italic
+    return p
+
+
+def para(text, align="j", size=None, bold=None, italic=None, after=None, before=None, indent=None, keep=False):
+    p = doc.add_paragraph()
+    p.alignment = {"j": WD_ALIGN_PARAGRAPH.JUSTIFY, "c": WD_ALIGN_PARAGRAPH.CENTER, "l": WD_ALIGN_PARAGRAPH.LEFT}[align]
+    if after is not None:
+        p.paragraph_format.space_after = Pt(after)
+    if before is not None:
+        p.paragraph_format.space_before = Pt(before)
+    if indent:
+        p.paragraph_format.left_indent = Cm(indent)
+    if keep:
+        p.paragraph_format.keep_with_next = True
+    return runs(p, text, size, bold, italic)
+
+
+def h1(t): doc.add_heading(t, level=1)
+def h2(t): doc.add_heading(t, level=2)
+
+
+def bullets(items):
+    for it in items:
+        p = doc.add_paragraph(style="List Bullet")
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after = Pt(3)
+        runs(p, it)
+
+
+def equation(text, num):
+    p = doc.add_paragraph()
+    p.paragraph_format.tab_stops.add_tab_stop(Cm(8.0), WD_TAB_ALIGNMENT.CENTER)
+    p.paragraph_format.tab_stops.add_tab_stop(Cm(16.0), WD_TAB_ALIGNMENT.RIGHT)
+    p.paragraph_format.space_after = Pt(6)
+    p.add_run("\t")
+    runs(p, text)
+    p.add_run("\t(%d)" % num).font.name = FONT
+    return p
+
+
+def set_cell_border(cell, **kw):
+    tcPr = cell._tc.get_or_add_tcPr()
+    b = tcPr.find(qn("w:tcBorders"))
+    if b is None:
+        b = OxmlElement("w:tcBorders"); tcPr.append(b)
+    for edge, sz in kw.items():
+        e = OxmlElement(f"w:{edge}")
+        e.set(qn("w:val"), "single" if sz else "nil"); e.set(qn("w:sz"), str(sz or 0)); e.set(qn("w:color"), "000000")
+        b.append(e)
+
+
+def shade(cell, fill):
+    tcPr = cell._tc.get_or_add_tcPr()
+    s = OxmlElement("w:shd"); s.set(qn("w:val"), "clear"); s.set(qn("w:color"), "auto"); s.set(qn("w:fill"), fill)
+    tcPr.append(s)
+
+
+TABLES = [0]
+FIGURES = [0]
+
+
+def table(caption, header, rows, widths, size=8.5, note=None, bold_last=False):
+    TABLES[0] += 1
+    cp = doc.add_paragraph()
+    cp.paragraph_format.keep_with_next = True
+    cp.paragraph_format.space_before = Pt(8)
+    cp.paragraph_format.space_after = Pt(3)
+    runs(cp, f"**Table {TABLES[0]}**  {caption}", size=10)
+    t = doc.add_table(rows=1 + len(rows), cols=len(header))
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    t.autofit = False
+    tblPr = t._tbl.tblPr
+    lay = OxmlElement("w:tblLayout"); lay.set(qn("w:type"), "fixed"); tblPr.append(lay)
+    for ci, w_ in enumerate(widths):
+        t.columns[ci].width = Cm(w_)
+    for ri, row in enumerate([header] + rows):
+        for ci, val in enumerate(row):
+            c = t.cell(ri, ci)
+            c.width = Cm(widths[ci])
+            c.text = ""
+            p = c.paragraphs[0]
+            p.paragraph_format.space_after = Pt(1)
+            p.paragraph_format.line_spacing = 1.0
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            runs(p, str(val), size=size, bold=True if ri == 0 or (bold_last and ri == len(rows)) else None)
+            set_cell_border(c, top=8 if ri == 0 else 0, bottom=8 if ri in (0, len(rows)) else 2 if False else 0,
+                            left=0, right=0)
+            if ri == 0:
+                shade(c, "E8EBF0")
+    for ri in range(len(rows) + 1):
+        trPr = t.rows[ri]._tr.get_or_add_trPr()
+        cs = OxmlElement("w:cantSplit"); trPr.append(cs)
+    if note:
+        np_ = para(note, size=8.5, italic=True, after=8, before=2)
+    else:
+        doc.add_paragraph().paragraph_format.space_after = Pt(4)
+    return t
+
+
+def figure(fname, caption, width=15.5):
+    FIGURES[0] += 1
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.keep_with_next = True
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(2)
+    p.add_run().add_picture(os.path.join(FIGS, fname), width=Cm(width))
+    c = para(f"**Figure {FIGURES[0]}**  {caption}", align="c", size=10, after=10)
+    return c
+
+
+def add_page_number(section):
+    p = section.footer.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for kind, txt in (("begin", None), (None, "PAGE"), ("end", None)):
+        r = p.add_run()
+        r.font.name, r.font.size = FONT, Pt(9)
+        if kind:
+            f = OxmlElement("w:fldChar"); f.set(qn("w:fldCharType"), kind); r._r.append(f)
+        else:
+            it = OxmlElement("w:instrText"); it.set(qn("xml:space"), "preserve"); it.text = txt; r._r.append(it)
+
+
+add_page_number(sec)
+
+# ============================================================= front matter
+TITLE = ("An asymmetric verification framework for cloud-assisted RAG systems using Merkle mountain "
+         "range auditing and dynamic boundary validation")
+para(TITLE, align="l", size=16, bold=True, after=10)
+para("Arulprasath V, Srinithi R, Sriram R, Jafer Sathik B and R. Senthil Prabha*", align="l", size=11.5, bold=True, after=2)
+para("Department of Information Technology, PSG College of Technology, Coimbatore – 641 004, Tamil Nadu, India",
+     align="l", size=10, after=1)
+para("Email: [author e-mail addresses to be supplied]", align="l", size=10, after=1)
+para("*Corresponding author: R. Senthil Prabha", align="l", size=10, after=10)
+
+ABSTRACT = (
+    "Organisations increasingly outsource vector storage and similarity search for retrieval-augmented generation (RAG) "
+    "to cloud providers they cannot fully trust. Such a provider can read stored chunks, forge or splice returned "
+    "passages, silently skip index partitions, or expose one tenant's data to another. Zero-knowledge approaches make "
+    "retrieval verifiable but impose server-side proving costs of several seconds. This paper presents a lightweight "
+    "framework in which a trusted client verifies every cloud response through five sequential checks: role-based "
+    "tenant authorisation, a two-tier Merkle mountain range (MMR) inclusion proof, dynamic boundary validation (DBV) of "
+    "the probed Voronoi cells, AES-256-GCM authenticated decryption, and corrective-RAG grounding. Chunk payloads are "
+    "encrypted before upload and committed to domain-separated MMRs. A Qdrant-based prototype is evaluated with "
+    "component benchmarks, a DBV margin ablation and adversarial tests. Checking 22 retrieved chunks takes under 1 ms "
+    "in-process, and ciphertext tampering, forged proofs, cell omission and cross-tenant access are rejected. The "
+    "evaluation also exposes prototype gaps, which we report together with remedies."
+)
+KEYWORDS = ("retrieval-augmented generation; cloud security; verifiable retrieval; Merkle mountain range; "
+            "boundary validation; authenticated encryption; multi-tenant isolation; vector database")
+n_abs = len(ABSTRACT.split())
+n_kw = len(KEYWORDS.split(";"))
+assert 150 <= n_abs <= 200, n_abs
+assert 6 <= n_kw <= 10, n_kw
+print("abstract words:", n_abs, " keywords:", n_kw)
+
+para("**Abstract:** " + ABSTRACT, size=10.5, after=6)
+para("**Keywords:** " + KEYWORDS + ".", size=10.5, after=6)
+para("**Reference** to this paper should be made as follows: Arulprasath, V., Srinithi, R., Sriram, R., Jafer Sathik, B. "
+     "and Senthil Prabha, R. (xxxx) ‘" + TITLE + "’, *Int. J. Cloud Computing*, Vol. x, No. x, pp.xxx–xxx.",
+     size=10, after=10)
+
+# ============================================================= 1 Introduction
+h1("1  Introduction")
+para("Large language models (LLMs) remain limited by static training data and a tendency to produce fluent but "
+     "unsupported statements. Retrieval-augmented generation (RAG) reduces this problem by retrieving relevant passages "
+     "from an external knowledge base and placing them in the model's context (Lewis et al., 2020). In a typical "
+     "deployment, documents are split into chunks, embedded as dense vectors and indexed for approximate nearest-neighbour "
+     "(ANN) search with structures such as inverted-file (IVF) partitions and hierarchical navigable small-world (HNSW) "
+     "graphs (Johnson et al., 2021; Malkov and Yashunin, 2020). Because such indices need substantial memory and compute, "
+     "many organisations hand vector storage and search to a cloud provider, which introduces a trust problem "
+     "(Palanisamy et al., 2026).")
+para("The provider sees what it stores. Dense embeddings can be inverted to recover close approximations of the source "
+     "text (Morris et al., 2023), and generated outputs can reveal whether a record is in the corpus (Li et al., 2025). "
+     "Beyond confidentiality, the client has no native way to confirm that returned chunks are authentic, that the "
+     "search covered the partitions it should have covered, or that results for one tenant were not drawn from "
+     "another's data. A cost-saving provider can quietly skip partitions, and a compromised one can modify or splice "
+     "passages to steer the LLM.")
+para("Verifiable-retrieval research addresses part of this problem with zero-knowledge proofs. VeriRAG (Lin et al., 2026), "
+     "V3DB (Qiu et al., 2026), zkRAG (Jiang et al., 2026) and VERIF (Zhang et al., 2026) prove retrieval correctness to "
+     "the client, but their authors report server-side proving times from several seconds to about a minute and a half per "
+     "query on large corpora. These systems prove the whole retrieval computation, which is a stronger guarantee than the "
+     "one pursued here.")
+para("This paper takes an *asymmetric* route. The client keeps a small amount of state, namely the encryption key, "
+     "Merkle roots and IVF centroids, and performs inexpensive checks on what the cloud returns, so the cloud never "
+     "generates a proof. The contributions are as follows.")
+bullets([
+    "A two-phase architecture for tenant-isolated RAG on an untrusted vector engine, in which chunk payloads are "
+    "AES-256-GCM encrypted and committed to a cryptographic audit structure before upload (Section 3).",
+    "A two-tier Merkle mountain range (MMR) with domain-separated hashing that binds each chunk to its user's "
+    "range and each user's root to an organisation root, with inclusion proofs of O(log N) hashes (Section 4.1).",
+    "Dynamic boundary validation (DBV), a client-side computation of the IVF cells that a complete multi-probe search "
+    "must cover, with a cluster-radius-scaled margin and an ablation of the margin factor (Sections 4.2 and 6.3).",
+    "A five-check verifier that combines role-based access control, MMR proof checking, DBV, authenticated decryption and "
+    "corrective-RAG grounding before any text reaches the LLM (Section 4.5).",
+    "An evaluation of a working prototype that includes component benchmarks, attack tests run directly on the "
+    "implementation, and a candid account of the guarantees the current prototype does and does not provide "
+    "(Sections 6 and 7).",
+])
+para("Section 2 reviews related work. Section 3 states the threat model and architecture, and Section 4 describes "
+     "the verification mechanisms. Section 5 summarises the implementation, Section 6 reports the evaluation, Section 7 "
+     "discusses limitations, and Section 8 concludes.")
+
+# ============================================================= 2 Related work
+h1("2  Related work")
+h2("2.1  Cryptographic approaches to outsourced vector search")
+para("Four families of techniques are commonly applied to outsourced search. Order-preserving encryption supports range "
+     "queries over scalar values but leaks ordering and cannot evaluate multi-dimensional similarity (Agrawal et al., 2004). "
+     "Fully homomorphic encryption, for example the CKKS scheme (Cheon et al., 2017), computes on ciphertexts but at a "
+     "large latency and storage cost for high-dimensional nearest-neighbour search. Hardware enclaves such as Intel SGX "
+     "keep computation in protected memory, but they are exposed to side-channel attacks and enclave memory limits "
+     "(Costan and Devadas, 2016). Zero-knowledge succinct arguments (Groth, 2016; Gabizon et al., 2019) let a server "
+     "prove that a computation was done correctly, but expressing floating-point similarity and top-k selection as "
+     "arithmetic circuits is expensive.")
+h2("2.2  Privacy-preserving and verifiable RAG")
+para("ppRAG applies distance-preserving matrix encryption so that a cloud can run ANN search on transformed vectors "
+     "without homomorphic encryption (Ye et al., 2026), but offers no check on integrity or search completeness. "
+     "Membership-inference attacks against RAG (Li et al., 2025) and differentially private generation (Grislain, 2024) "
+     "address leakage at the generation stage and, in the latter case, at some cost in answer accuracy. ZKSQL (Li et al., 2023) "
+     "and ZKGraph (Wu et al., 2025) verify relational and graph queries in zero knowledge, but neither targets "
+     "continuous similarity search. VeriRAG, V3DB, zkRAG and VERIF are the closest vector-retrieval systems: each "
+     "reports its own proving and verification cost and memory use, summarised in Table 1. Palanisamy et al. (2026) survey "
+     "RAG security and note that defences remain fragmented across confidentiality, integrity and availability.")
+table("Related approaches and their reported characteristics (figures are as reported by the cited authors and were not reproduced).",
+      ["Approach", "Core method", "Main guarantee", "Reported cost or limitation"],
+      [
+          ["ppRAG (Ye et al., 2026)", "Distance-preserving matrix encryption", "Vector confidentiality against passive observers", "No integrity or completeness check"],
+          ["S2MIA (Li et al., 2025)", "Black-box membership inference", "Attack analysis only", "No defence architecture"],
+          ["DP-RAG (Grislain, 2024)", "Differential-privacy noise at decoding", "Bounded leakage per query", "Accuracy loss; privacy budget depletes"],
+          ["ZKSQL (Li et al., 2023)", "Zero-knowledge SQL evaluation", "Correct relational queries", "Not designed for similarity search"],
+          ["ZKGraph (Wu et al., 2025)", "Expansion-centric ZK operators", "Correct graph queries", "General graph databases, not HNSW"],
+          ["VeriRAG (Lin et al., 2026)", "Algorithm-specific ZK arguments", "Verified top-k ANN result", "Prover 96 s, verifier 3 s on 37 GB"],
+          ["V3DB (Qiu et al., 2026)", "Audit-on-demand zk-SNARKs, IVF-PQ", "Search bound to a committed snapshot", "Proof per audit; snapshot management"],
+          ["zkRAG (Jiang et al., 2026)", "Succinct ZK argument for HNSW", "Correct HNSW retrieval", "About 50 s per query (10^{6} vectors, d = 128)"],
+          ["VERIF (Zhang et al., 2026)", "ZK PIOP for IVF-Flat retrieval", "Proof of full IVF-Flat retrieval", "Proving 5.90–11.57 s; verification 0.62–1.48 s"],
+          ["This work", "AES-GCM, two-tier MMR, DBV, RBAC", "Payload authenticity and confidentiality, cell-coverage check, tenant isolation", "No proof of exact top-k; gaps listed in Table 9"],
+      ],
+      [3.3, 4.0, 4.4, 4.3], bold_last=True)
+h2("2.3  Authenticated data structures")
+para("Merkle trees authenticate a set of records with a single digest (Merkle, 1987). Crosby and Wallach (2009) "
+     "developed history trees for tamper-evident logging. The Merkle mountain range, as described by Todd (2018), is an "
+     "append-only collection of perfect binary trees whose peaks are combined into one root; completed subtrees never "
+     "change, so proofs issued earlier remain valid when leaves are appended. Hashing uses SHA-256 (NIST, 2015), and "
+     "payload protection uses AES-GCM authenticated encryption (Dworkin, 2007).")
+h2("2.4  Gap addressed")
+para("Existing work covers confidentiality, integrity or completeness largely in isolation, and the zero-knowledge "
+     "systems place the proving burden on the server. We study a combination that is cheap for the client to check: "
+     "authenticated encryption, a hierarchical append-only audit structure for multi-tenant data, an IVF boundary check, "
+     "and tenant-level access control, evaluated on a working prototype with its limitations stated.")
+
+# ============================================================= 3 Threat model + architecture
+h1("3  Threat model and architecture")
+h2("3.1  Threat model")
+para("The cloud vector engine is treated as honest-but-curious or actively malicious. It can read everything it stores, "
+     "return modified, forged or re-assigned payloads, drop index partitions from a search, and serve results from the "
+     "wrong tenant's data. The client service is trusted: it holds the AES-256 key, computes the MMR roots and holds the IVF "
+     "centroids. Compromise of the client, hardware enclaves, side channels, denial of service and network-level attacks "
+     "are out of scope. Table 2 lists the threats considered, the mechanism that addresses each and its status in the "
+     "prototype, and Table 3 shows where each asset resides.")
+table("Threats, mechanisms and implementation status.",
+      ["Threat", "Adversarial action", "Mechanism", "Status in prototype"],
+      [
+          ["T1 Plaintext exposure", "Read chunk text held by the cloud", "AES-256-GCM encryption before upload", "Implemented"],
+          ["T2 Embedding inversion", "Invert stored vectors to text", "Vector masking (orthogonal transform)", "Not in prototype; vectors stored unmasked"],
+          ["T3 Chunk forgery or splicing", "Modify or substitute a returned chunk", "MMR inclusion proof; GCM tag", "Implemented, with gaps (Table 9)"],
+          ["T4 Cell omission", "Skip IVF cells during search", "DBV set-inclusion check", "Implemented as a set check"],
+          ["T5 Cross-tenant access", "Query another organisation's data", "Per-tenant collections; RBAC check", "Implemented at the client service"],
+          ["T6 Ungrounded generation", "Irrelevant or poisoned context", "CRAG grading; Self-RAG tokens; grounding score", "Implemented as heuristics"],
+      ],
+      [3.3, 4.0, 4.6, 4.1])
+table("Assets and trust domains in the prototype.",
+      ["Asset", "Trusted client service", "Untrusted cloud engine"],
+      [
+          ["Chunk plaintext", "Read after authenticated decryption", "Ciphertext only"],
+          ["AES-256 key", "Held in service configuration", "Never sent"],
+          ["Chunk embeddings (384-d)", "Generated locally", "Stored unmasked (cosine search needs them)"],
+          ["Chunk hash, nonce, ACL, cell id", "Created at ingestion", "Stored as point payload"],
+          ["MMR proof path and root", "Computed at ingestion; root recorded", "Stored as point payload"],
+          ["IVF centroids and radii", "Trained and stored locally", "Not needed (filters by cell id)"],
+          ["User credentials", "SQLite; PBKDF2-HMAC-SHA256, 100,000 iterations", "Never sent"],
+      ],
+      [4.6, 6.0, 5.4])
+h2("3.2  Architecture")
+para("Figure 1 shows the two phases. In Phase A the client service chunks a document, embeds each chunk, assigns it to an "
+     "IVF cell, encrypts the text, hashes it, commits it to the two-tier MMR and uploads the result to a collection reserved "
+     "for the tenant. In Phase B the client redacts personal identifiers from the query, embeds it, computes the cells "
+     "a complete search must cover, fetches candidates from the cloud and applies the five checks before synthesis. "
+     "In the prototype the client service and the Qdrant instance run on one machine, so the trust boundary is logical and "
+     "network latency is absent from the measurements in Section 6.")
+figure("fig1_architecture.png", "Architecture of the framework: ingestion (Phase A) and verified query processing (Phase B) "
+       "across the trusted client service and the untrusted vector engine.", 11.5)
+h2("3.3  Phase A: ingestion")
+para("Text is extracted from PDF or plain-text input and split into windows of 500 characters with a 50-character overlap, "
+     "preferring section and sentence boundaries. Each chunk is embedded with all-MiniLM-L6-v2 (Reimers and Gurevych, 2019; "
+     "Wang et al., 2020), which yields L2-normalised 384-dimensional vectors, and is assigned to the nearest IVF centroid by "
+     "cosine distance. The chunk text is hashed with SHA-256 and encrypted with AES-256-GCM under a fresh 96-bit random nonce. "
+     "Each tenant has its own collection, and each point carries an access-control list naming the owning user and the "
+     "organisation administrator. The chunks of a user are then committed to a user MMR whose root becomes a leaf of the "
+     "organisation MMR (Section 4.1), and each point stores its leaf hash, proof path and the organisation root.")
+h2("3.4  Phase B: query and retrieval")
+para("A regular-expression filter redacts e-mail addresses, national identifiers, phone numbers, card numbers and IP "
+     "addresses from the query before embedding. The client then computes the required IVF cells (Section 4.2) and "
+     "retrieves candidates from the tenant's collection. The prototype supports two retrieval paths: an exact-scoring path "
+     "that reads every point of the tenant's collection, which the interactive application uses by default for the "
+     "small collections in our deployment, and a multi-probe path that probes the required IVF cells and an HNSW "
+     "nearest-neighbour search. Candidates then pass the five checks of Section 4.5.")
+
+# ============================================================= 4 Verification mechanisms
+h1("4  Verification mechanisms")
+h2("4.1  Two-tier Merkle mountain range")
+para("Every hash is SHA-256 with a one-byte domain prefix so that values from different levels cannot be confused. "
+     "A chunk leaf commits to the chunk's position and to the hash of its plaintext, where *H*(·) denotes SHA-256 "
+     "and ‖ concatenation:")
+equation("leaf = *H*(0x00 ‖ org ‖ user ‖ doc ‖ chunk ‖ index ‖ *H*(plaintext))", 1)
+para("The identifiers are joined with a colon separator. An internal node hashes its two children, and the peaks "
+     "*P*_{1}, …, *P*_{m} of a range are bagged from right to left into a single value:")
+equation("node(*a*, *b*) = *H*(0x01 ‖ *a* ‖ *b*)", 2)
+equation("*B*_{m} = *P*_{m},   *B*_{i} = node(*P*_{i}, *B*_{i+1}),   bag = *B*_{1}", 3)
+para("A user MMR (Tier 1) holds the leaves of one user's chunks, sorted by document, index and chunk identifier. Its root "
+     "includes the user and the chunk count. The organisation MMR (Tier 2) takes the user roots, in alphabetical order of "
+     "user identifier, as its leaves, and its root includes the organisation, the number of users *U* and the total "
+     "number of chunks *N*:")
+equation("*R*_{user} = *H*(0x03 ‖ user ‖ *n*_{u} ‖ bag_{user})", 4)
+equation("*R*_{org} = *H*(0x04 ‖ org ‖ *U* ‖ *N* ‖ bag_{org})", 5)
+figure("fig2_two_tier_mmr.png", "Two-tier MMR: chunk leaves are committed to per-user ranges, whose roots are leaves of the "
+       "organisation range.", 13.5)
+para("An inclusion proof lists, for the chunk's mountain, the sibling hashes with their left or right position, the "
+     "list of user peaks, and the corresponding data for the organisation tier. Verification (i) recomputes the leaf from "
+     "the chunk attributes, (ii) climbs the sibling path to the user peak, (iii) checks that the peak is in the peak list, "
+     "bags the peaks and recomputes *R*_{user}, (iv) repeats steps (ii) and (iii) for the organisation tier with *R*_{user} as the "
+     "leaf, and (v) compares the resulting root with the expected organisation root. A proof contains "
+     "O(log *n*_{u} + log *U*) sibling hashes; Table 5 reports measured path lengths.")
+h2("4.2  Dynamic boundary validation")
+para("The IVF index partitions the vector space into *C* cells around centroids μ_{1}, …, μ_{C} learned by k-means. "
+     "With cosine distance *d*(*q*, μ) = 1 − cos(*q*, μ), let *d*_{i} = *d*(*q*, μ_{i}), let *i*∗ be the nearest cell with "
+     "*d*_{min} = *d*_{i*}, and let *r*_{i} be the radius of cell *i*, defined as the largest cosine distance between a member of the "
+     "cell and its centroid. The radii are stored with the centroids at indexing time. The client requires the nearest "
+     "cell and every cell whose centroid is within a radius-scaled margin of it:")
+equation("*S*_{req} = {*i*∗} ∪ {*i* ≠ *i*∗ : *d*_{i} − *d*_{min} < λ · *r*_{i*}},   λ = 1.5", 6)
+para("When *d*_{min} = 0 only the nearest cell is required. A response is accepted when the cells reported as probed "
+     "contain every required cell, and the coverage ratio |*S*_{req} ∩ *S*_{ret}| / |*S*_{req}| is recorded:")
+equation("accept  ⇔  *S*_{req} ⊆ *S*_{ret}", 7)
+para("The margin is scaled by the cell radius, not by *d*_{min}, because in 384 dimensions cosine distances to different "
+     "centroids are close to one another and a ratio to a small *d*_{min} is unstable. DBV checks *compliance* "
+     "with the agreed set of cells; it does not prove that the exact global top-k was returned, and it applies only to "
+     "IVF-partitioned search (HNSW has no cells). In the prototype, the cells reported by the cloud are taken from the "
+     "cell identifiers stored in the returned points. Those identifiers are not part of the MMR leaf, so DBV in its "
+     "present form defends against a lazy cloud, not against one that reports false identifiers (Section 7).")
+h2("4.3  Authenticated encryption and access control")
+para("Chunk text is encrypted with AES-256-GCM using a random 96-bit nonce, which produces a ciphertext with a 128-bit "
+     "authentication tag (Dworkin, 2007). Decryption fails if the ciphertext or tag has been altered, so a modified "
+     "ciphertext never yields plaintext. Access control uses a registry of users with an organisation, a role and an "
+     "approval status. Passwords are stored with PBKDF2-HMAC-SHA256 (Moriarty et al., 2017) at 100,000 iterations, and "
+     "sign-in with a Google identity token is also supported. A request is authorised only if the user exists, is "
+     "approved, and belongs to the organisation that owns the target collection, after organisation aliases are "
+     "normalised.")
+h2("4.4  Retrieval quality and grounding")
+para("Decrypted candidates are scored by a hybrid of dense cosine similarity and BM25 lexical scores (Robertson and "
+     "Zaragoza, 2009), fused by reciprocal rank fusion (Cormack et al., 2009) and optionally re-ranked by a MiniLM cross-encoder, "
+     "with a lexical fallback when the model is unavailable. A corrective-RAG-style grader (Yan et al., 2024) blends retrieval "
+     "score and query-term overlap into a confidence and labels the retrieval correct (≥ 0.55), ambiguous (≥ 0.25) or incorrect. "
+     "After generation, a grounding score compares the answer with the context, with a threshold of 0.35, and a "
+     "Self-RAG-style reflection (Asai et al., 2024) reports a support ratio and a reflection token. These components "
+     "are rule-based approximations and not trained critics.")
+h2("4.5  The five checks")
+para("Figure 3 shows the verification sequence applied to a cloud response. Gate 1 checks authorisation, Gate 2 verifies "
+     "MMR proofs, Gate 3 applies DBV, Gate 4 decrypts with tag verification, and Gate 5 applies grounding. A failure at any gate "
+     "blocks generation. Gate 1 is also the point at which cross-tenant requests are rejected, and the response then reports "
+     "zero chunks.")
+figure("fig3_five_checks.png", "The five checks applied to a cloud response and the threat each one addresses.", 13.0)
+para("**Security analysis.** *Gate 1* blocks a user who is unregistered, pending, rejected or in another organisation. "
+     "*Gate 2* detects any change to a chunk's identifiers or plaintext hash and any change to a sibling hash, "
+     "because the recomputed root then differs. It does not cover the ciphertext itself, which the leaf does not "
+     "include. *Gate 3* detects omission of a required cell from the reported set. *Gate 4* detects modification of "
+     "ciphertext, nonce or tag. *Gate 5* filters irrelevant context but offers no cryptographic guarantee. Section 6.4 tests "
+     "each claim on the implementation and reports two cases that the present checks do not catch.")
+
+# ============================================================= 5 Implementation
+h1("5  Implementation")
+para("The prototype is written in Python and exposes a FastAPI service with endpoints for ingestion, "
+     "verified query, retrieval and administration, and a browser front end. Table 4 lists the main components and parameters.")
+table("Implementation specification.",
+      ["Component", "Specification"],
+      [
+          ["Service", "Python, FastAPI, Pydantic; SQLite for users and approvals"],
+          ["Vector engine", "Qdrant v1.19.1, one cosine collection per tenant, 384 dimensions; HNSW m = 16, ef_construct = 100"],
+          ["Embedding", "all-MiniLM-L6-v2 (384-d, normalised); hashed bag-of-words fallback when the model is unavailable"],
+          ["Chunking", "500-character windows, 50-character overlap, section-aware"],
+          ["Cryptography", "AES-256-GCM (96-bit random nonce, 128-bit tag); SHA-256; PBKDF2-HMAC-SHA256 (100,000 iterations)"],
+          ["Audit structure", "Two-tier MMR, domain prefixes 0x00–0x04, peaks bagged right to left"],
+          ["IVF boundary", "Six cells by default (k-means), cell radii stored with centroids, λ = 1.5"],
+          ["Re-ranking", "Dense + BM25 with reciprocal rank fusion; MiniLM cross-encoder with heuristic fallback; LangChain multi-query retrieval with FlashRank"],
+          ["Generation", "External LLM (Gemini or OpenAI) when keys are configured; local extractive synthesiser otherwise"],
+      ],
+      [3.6, 12.4])
+
+# ============================================================= 6 Evaluation
+h1("6  Experimental evaluation")
+h2("6.1  Setup")
+env = R["environment"]
+co = R["corpus"]
+para(f"All measurements were taken on a Windows 11 machine with an Intel x86-64 CPU, using Python {env['python']} in a single "
+     f"process with the Qdrant layer replaced by in-memory structures where noted. Timings are medians over repeated "
+     f"in-process runs and exclude network transfer and LLM calls. The component and attack tests call the project's own "
+     f"hashing, MMR, encryption, boundary-validation and authorisation modules directly.")
+para(f"The ablation uses a corpus of {co['chunks']} chunks ({co['chars']:,} characters) produced by the project's chunker from the "
+     f"text of the project report, and {R['n_queries']} queries, each a sentence drawn from a chunk. The ground truth for a query "
+     f"is the exact top-5 chunks by cosine similarity among all other chunks, so the source chunk is excluded. "
+     f"The embedding model weights were not available in the benchmark environment, so the prototype's deterministic "
+     f"hashed bag-of-words embedder (384-d) was used, and k-means was run with an equivalent NumPy implementation. "
+     f"The ablation figures therefore describe this embedder and corpus; the experiment script in the repository "
+     f"reruns them unchanged with the neural encoder.")
+h2("6.2  Component cost")
+mm = R["mmr_proof_verification"]
+pq = R["per_query_verification"]
+aes = R["aes_gcm_decrypt_500B"]
+dbv = R["dbv_check_latency"]
+table("Median client-side cost of the verification components (in-process, single thread).",
+      ["Component", "Setting", "Median (ms)", "95th percentile (ms)"],
+      [
+          [f"Two-tier MMR proof verification", f"{m['chunks']:,} chunks, 10 users; mean {m['mean_sibling_hashes']} sibling hashes",
+           f"{m['verify_median_ms']:.3f}", f"{m['verify_p95_ms']:.3f}"] for m in mm
+      ] + [
+          ["AES-256-GCM decryption", "500-byte chunk", f"{aes['median_ms']:.4f}", f"{aes['p95_ms']:.4f}"],
+          ["DBV check", "6 cells, 384-d query", f"{dbv['median_ms']:.3f}", f"{dbv['p95_ms']:.3f}"],
+      ] + [
+          ["Gates 2, 3 and 4 for one query", f"{p['retrieved_chunks']} retrieved chunks", f"{p['median_ms']:.3f}", f"{p['p95_ms']:.3f}"] for p in pq
+      ],
+      [4.6, 6.0, 2.4, 3.0])
+para(f"Verification of a single proof takes {mm[0]['verify_median_ms']*1000:.0f} µs at 100 chunks and {mm[-1]['verify_median_ms']*1000:.0f} µs at "
+     f"{mm[-1]['chunks']:,} chunks, and the proof grows from {mm[0]['mean_sibling_hashes']} to {mm[-1]['mean_sibling_hashes']} sibling hashes, "
+     f"consistent with logarithmic growth. Verifying the proofs, tags and cells for 22 retrieved chunks takes "
+     f"{pq[1]['median_ms']:.2f} ms. These figures measure the client's checking work only. They omit network transfer, "
+     f"embedding, re-ranking and generation, and they are not comparable with server-side proving times reported for "
+     f"zero-knowledge systems, which do a different job.")
+h2("6.3  Dynamic boundary validation ablation")
+ab = R["dbv_ablation"]
+rows = []
+for a in ab:
+    rows.append([str(a["n_lists"]), f"{a['margin_factor']:g}", f"{a['recall_at_5']:.3f}", f"{a['mean_cells_probed']:.2f}",
+                 f"{a['mean_fraction_scanned']*100:.1f}%", f"{a['queries_with_multiple_required_cells']*100:.1f}%",
+                 f"{a['omission_detected']}/{a['omission_attempts']}"])
+table("Margin factor λ: recall of cell-restricted search, required cells and omission detection "
+      f"({R['n_queries']} queries, {co['chunks']} chunks; hashed bag-of-words embedder).",
+      ["IVF cells", "λ", "Recall@5", "Mean required cells", "Corpus in required cells", "Queries needing ≥ 2 cells", "Omissions detected"],
+      rows, [1.6, 1.2, 2.0, 2.6, 2.8, 3.0, 2.8], size=8.5)
+figure("fig4_ablation.png", "Effect of the margin factor on recall@5 and on the fraction of the corpus that must be probed "
+       "(dotted line: λ = 1.5).", 14.0)
+a6 = {a["margin_factor"]: a for a in ab if a["n_lists"] == 6}
+a16 = {a["margin_factor"]: a for a in ab if a["n_lists"] == 16}
+para(f"The margin factor controls a trade-off between audit strictness and the share of the index that has to be "
+     f"probed. With six cells, λ = 0.1 requires {a6[0.1]['mean_cells_probed']:.2f} cells on average and restricts search to "
+     f"{a6[0.1]['mean_fraction_scanned']*100:.0f}% of the corpus, but only {a6[0.1]['recall_at_5']*100:.0f}% of the true top-5 chunks fall inside those cells. "
+     f"Raising λ to 0.5 recovers {a6[0.5]['recall_at_5']*100:.1f}% recall at {a6[0.5]['mean_fraction_scanned']*100:.0f}% of the corpus, and at the "
+     f"adopted value λ = 1.5 recall is {a6[1.5]['recall_at_5']:.3f} (six cells) and {a16[1.5]['recall_at_5']:.3f} (sixteen cells). "
+     f"At that setting, however, DBV requires {a6[1.5]['mean_fraction_scanned']*100:.0f}% and {a16[1.5]['mean_fraction_scanned']*100:.1f}% of the corpus, "
+     f"so on this corpus and embedder the check behaves close to a full-coverage requirement and saves little search work. "
+     f"A larger value of λ buys recall by widening the required set. Whether a smaller λ is preferable depends on the "
+     f"recall the application needs and on how the cells are distributed for the deployed encoder, which should be "
+     f"measured on the target corpus before λ is fixed.")
+para("Every injected omission was detected, as expected of a set-inclusion test: each required cell was dropped in turn "
+     "from the reported set, and all "
+     f"{sum(a['omission_attempts'] for a in ab if a['n_lists']==6 and a['margin_factor']==1.5):,} and "
+     f"{sum(a['omission_attempts'] for a in ab if a['n_lists']==16 and a['margin_factor']==1.5):,} attempts at λ = 1.5 were rejected for six and sixteen cells "
+     "respectively. Because the honest provider reports exactly the required set, the false-alarm rate on honest "
+     "runs is zero by construction; the check does not measure how often a real, approximate engine would legitimately "
+     "miss a cell.")
+h2("6.4  Adversarial tests on the implementation")
+at = R["attack_tests"]
+cross = at["A7_cross_tenant_access"]
+table("Attack tests run against the implementation (function level).",
+      ["Test", "Attack", "Detecting check", "Outcome"],
+      [
+          ["A1", "Flip one bit of a stored ciphertext", "Gate 4 (GCM tag)",
+           "Rejected by the tag" if at["A1_ciphertext_bitflip"]["aead_rejects"] else "Accepted"],
+          ["A1b", "Same attack, seen by the MMR proof", "Gate 2", "Not detected: the leaf commits to the plaintext hash only"],
+          ["A2", "Replace the chunk hash in the proof", "Gate 2 (MMR)", "Rejected" if at["A2_forged_chunk_hash"]["mmr_rejects"] else "Accepted"],
+          ["A3", "Modify one sibling hash in the proof path", "Gate 2 (MMR)", "Rejected" if at["A3_modified_sibling_hash"]["mmr_rejects"] else "Accepted"],
+          ["A4", "Omit one required IVF cell", "Gate 3 (DBV)", "All attempts rejected (Table 6)"],
+          ["A5", "User from another organisation queries a tenant", "Gate 1 (RBAC)",
+           "Rejected" if cross["other_org_blocked"] and cross["other_org_blocked_2"] else "Accepted"],
+          ["A5b", "Pending or unknown user queries own organisation", "Gate 1 (RBAC)",
+           "Rejected" if cross["pending_user_blocked"] and cross["unknown_user_blocked"] else "Accepted"],
+          ["A6", "Swap ciphertext and nonce between two chunks", "Gate 4",
+           "Not detected: decryption succeeds" if not at["A4_ciphertext_swap_between_chunks"]["aead_rejects"] else "Rejected"],
+          ["A7", "Forged chunk with its own self-consistent proof", "Gate 2 with root from the response",
+           "Accepted" if at["A5_self_consistent_forgery"]["accepted_with_proof_embedded_root"] else "Rejected"],
+          ["A7b", "Same forgery checked against the trusted root", "Gate 2 with client-held root",
+           "Rejected" if not at["A5_self_consistent_forgery"]["accepted_against_trusted_root"] else "Accepted"],
+      ],
+      [1.2, 6.0, 3.8, 5.0])
+para("Tests A1 to A5 confirm that each gate rejects the attack it was designed for. A1b, A6 and A7 show the limits of the "
+     "present implementation. The MMR leaf commits to the hash of the plaintext and not to the ciphertext, so tampering "
+     "with ciphertext is caught by the GCM tag at Gate 4 rather than by the MMR. AES-GCM is invoked without associated data, "
+     "and the plaintext hash is not rechecked after decryption, so a ciphertext and nonce swapped between chunks that "
+     "share the key decrypts successfully. Finally, the query path takes the expected organisation root from the proof "
+     "that accompanies the response, so an attacker who builds a self-consistent proof for a forged chunk is accepted; "
+     "the same proof is rejected when verified against a root held by the client (A7b). The remedies are listed in "
+     "Table 9.")
+h2("6.5  Operational validation")
+para("Figures 5 to 7 show the prototype in operation. Figure 5 shows the Qdrant dashboard with one collection per "
+     "tenant, each standardised on 384-dimensional cosine vectors. Figure 6 shows a stored point, whose text is replaced "
+     "by a Base64 ciphertext with its nonce, chunk hash and access-control list, and the leaf hash and two-tier proof "
+     "path that accompany it. Figure 7 shows an authorised query returning a grounded answer and a cross-tenant query "
+     "that is blocked.")
+figure("fig5_collections.png", "Qdrant collections for five tenants; all report green health, 384-dimensional cosine vectors, six segments and one shard.", 13.0)
+figure("fig6_payload.png", "Stored point payload: (a) ciphertext, nonce, plaintext hash and access-control list; (b) leaf hash and "
+       "two-tier proof path stored beside the vector.", 15.0)
+figure("fig7_ui.png", "Verified query interface: (a) an approved member queries their own organisation; (b) a member of another "
+       "organisation is blocked and no chunks are released.", 14.0)
+table("Operational observations.",
+      ["Figure", "Observation", "Property shown"],
+      [
+          ["5", "Collections org_1 (7 points), org_2 (22), org_3, org_4 and org_10 (4 each), all green", "Per-tenant collection isolation"],
+          ["6", "Ciphertext, 96-bit nonce, SHA-256 hash and ACL stored; no plaintext", "Payload confidentiality; ACL binding"],
+          ["6", "Leaf hash, user and cloud proof, expected root stored with the point", "Material for Gate 2"],
+          ["7a", "User sriram20 (member, Org 2, approved) queries org_2: 22 chunks verified, 137.9 ms end to end", "Authorised path"],
+          ["7b", "User sriram10 (Default Org) queries org_2: blocked, 0 chunks, 137.64 ms end to end", "Gate 1 tenant isolation"],
+      ],
+      [1.6, 9.4, 5.0],
+      note="End-to-end times include retrieval, re-ranking and answer synthesis on the development machine and are not the "
+           "verification-only costs of Table 5.")
+
+# ============================================================= 7 Discussion
+h1("7  Discussion and limitations")
+para("The evaluation supports three conclusions. The checks that the client performs are inexpensive, at about "
+     f"{pq[1]['median_ms']:.1f} ms for 22 chunks, so verification is unlikely to dominate response time next to retrieval and "
+     "generation. Each gate rejects the attack class assigned to it in function-level tests. And the DBV margin has a "
+     "measurable effect on the required set, so λ should be tuned on the target corpus.")
+para("These results should be read with the limits of the prototype in mind, which Table 9 sets out together with the "
+     "change that would remove each one. We think it more useful to state them than to leave readers to find them. The "
+     "comparison with zero-knowledge systems is also limited: those systems prove that the whole retrieval was computed "
+     "correctly, whereas this framework checks the authenticity of the returned payloads and the coverage of the "
+     "agreed cells. Table 1 therefore lists reported costs for context and does not rank the systems.")
+table("Limitations of the current prototype and planned remedies.",
+      ["Limitation", "Observed behaviour", "Planned remedy"],
+      [
+          ["L1 Embeddings stored unmasked", "Vectors are uploaded as generated, so inversion attacks apply (T2)",
+           "Add a secret orthogonal transform or noisy distance-comparison-preserving encryption (Ye et al., 2026); note known-plaintext risk"],
+          ["L2 No associated data", "GCM is called without associated data; plaintext hash is not rechecked (A6)",
+           "Bind tenant and chunk identifiers as associated data and compare the decrypted hash with the leaf"],
+          ["L3 Root taken from the response", "Gate 2 verifies against the root inside the proof (A7)",
+           "Verify against a client-held, versioned root with epoch numbers and consistency proofs"],
+          ["L4 Roots built per ingestion call", "The organisation MMR is rebuilt from the chunks of the current ingestion call, not appended across the whole organisation",
+           "Persist the MMR and append new leaves, keeping earlier proofs valid"],
+          ["L5 Unauthenticated cell ids", "Cell identifiers are payload fields outside the leaf; the default query path scans the whole collection, which satisfies coverage trivially",
+           "Commit the cell id in the leaf, require per-cell evidence and random spot checks"],
+          ["L6 Single key and default key", "One AES key for all tenants, with a development default in the settings file",
+           "Per-tenant keys from a key-management service"],
+          ["L7 Authorisation after retrieval", "RBAC is enforced in the client service after the cloud returns candidates",
+           "Collection-scoped credentials at the vector engine"],
+          ["L8 Heuristic grounding", "CRAG and Self-RAG components are rule-based; lexical grounding is used without a neural encoder",
+           "Use trained relevance and support critics"],
+          ["L9 Small evaluation", f"{co['chunks']} chunks, five tenants, fallback embedder, single machine", "Larger corpora, neural encoder, networked deployment"],
+      ],
+      [3.5, 6.6, 5.9])
+
+# ============================================================= 8 Conclusion
+h1("8  Conclusion")
+para("We presented a verification framework for RAG on an untrusted cloud vector engine that combines authenticated "
+     "encryption, a two-tier Merkle mountain range, an IVF boundary check, tenant-level access control and grounding "
+     "checks, with no server-side proving. In a working prototype the client-side checks for 22 retrieved chunks "
+     f"take {pq[1]['median_ms']:.1f} ms in-process, ciphertext tampering, forged proof elements, cell omission and cross-tenant access are "
+     "rejected, and a margin ablation shows how the DBV factor trades required coverage against recall. The tests also show "
+     "that the current prototype does not authenticate the binding between ciphertexts and chunks, does not anchor "
+     "verification in a client-held root, and stores embeddings unmasked.")
+para("Future work will close these gaps in the order of Table 9: bind associated data and recheck hashes, anchor "
+     "verification in a persistent versioned root, add per-cell evidence to DBV, mask embeddings, and repeat the evaluation "
+     "with a neural encoder on larger multi-tenant corpora over a real network.")
+
+# ============================================================= References
+h1("References")
+REFS = [
+    "Agrawal, R., Kiernan, J., Srikant, R. and Xu, Y. (2004) ‘Order-preserving encryption for numeric data’, in *Proceedings of the ACM SIGMOD International Conference on Management of Data*, pp.563–574.",
+    "Asai, A., Wu, Z., Wang, Y., Sil, A. and Hajishirzi, H. (2024) ‘Self-RAG: learning to retrieve, generate, and critique through self-reflection’, in *Proceedings of the International Conference on Learning Representations (ICLR)*.",
+    "Cheon, J.H., Kim, A., Kim, M. and Song, Y. (2017) ‘Homomorphic encryption for arithmetic of approximate numbers’, in *Advances in Cryptology – ASIACRYPT*, pp.409–437.",
+    "Cormack, G.V., Clarke, C.L.A. and Büttcher, S. (2009) ‘Reciprocal rank fusion outperforms Condorcet and individual rank learning methods’, in *Proceedings of the 32nd International ACM SIGIR Conference on Research and Development in Information Retrieval*, pp.758–759.",
+    "Costan, V. and Devadas, S. (2016) ‘Intel SGX explained’, *IACR Cryptology ePrint Archive*, Report 2016/086.",
+    "Crosby, S.A. and Wallach, D.S. (2009) ‘Efficient data structures for tamper-evident logging’, in *Proceedings of the USENIX Security Symposium*, pp.317–334.",
+    "Dworkin, M. (2007) *Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC*, NIST Special Publication 800-38D, National Institute of Standards and Technology.",
+    "Gabizon, A., Williamson, Z.J. and Ciobotaru, O. (2019) ‘PLONK: permutations over Lagrange-bases for oecumenical non-interactive arguments of knowledge’, *IACR Cryptology ePrint Archive*, Report 2019/953.",
+    "Grislain, N. (2024) ‘RAG with differential privacy’, arXiv preprint arXiv:2412.19291.",
+    "Groth, J. (2016) ‘On the size of pairing-based non-interactive zero-knowledge proofs’, in *Advances in Cryptology – EUROCRYPT*, pp.305–326.",
+    "Jiang, Y., Yang, X., Liu, X., Guo, Y. and Zhang, J. (2026) ‘zkRAG: efficiently proving RAG retrieval in zero knowledge’, *IACR Cryptology ePrint Archive*, Report 2026/709.",
+    "Johnson, J., Douze, M. and Jégou, H. (2021) ‘Billion-scale similarity search with GPUs’, *IEEE Transactions on Big Data*, Vol. 7, No. 3, pp.535–547.",
+    "Lewis, P. et al. (2020) ‘Retrieval-augmented generation for knowledge-intensive NLP tasks’, in *Advances in Neural Information Processing Systems (NeurIPS)*, Vol. 33, pp.9459–9474.",
+    "Li, X., Weng, C., Xu, Y., Wang, X. and Rogers, J. (2023) ‘ZKSQL: verifiable and efficient query evaluation with zero-knowledge proofs’, *Proceedings of the VLDB Endowment*, Vol. 16, No. 8, pp.1804–1816.",
+    "Li, Y. et al. (2025) ‘Generating is believing: membership inference attacks against retrieval-augmented generation’, in *IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)*, arXiv:2406.19234.",
+    "Lin, C., Cui, Y., Zhou, Z., Hong, C., Wang, Y., Chen, Z. and Li, M. (2026) ‘VeriRAG: efficient zero-knowledge proofs for verifiable retrieval-augmented generation’, *IACR Cryptology ePrint Archive*, Report 2026/637.",
+    "Malkov, Y.A. and Yashunin, D.A. (2020) ‘Efficient and robust approximate nearest neighbor search using hierarchical navigable small world graphs’, *IEEE Transactions on Pattern Analysis and Machine Intelligence*, Vol. 42, No. 4, pp.824–836.",
+    "Merkle, R.C. (1987) ‘A digital signature based on a conventional encryption function’, in *Advances in Cryptology – CRYPTO ’87*, Lecture Notes in Computer Science, Vol. 293, pp.369–378.",
+    "Moriarty, K., Kaliski, B. and Rusch, A. (2017) *PKCS #5: Password-Based Cryptography Specification Version 2.1*, RFC 8018, Internet Engineering Task Force.",
+    "Morris, J.X. et al. (2023) ‘Text embeddings reveal (almost) as much as text’, in *Proceedings of the Conference on Empirical Methods in Natural Language Processing (EMNLP)*, pp.12448–12460.",
+    "NIST (2015) *Secure Hash Standard (SHS)*, FIPS PUB 180-4, National Institute of Standards and Technology.",
+    "Palanisamy, B., Chalapathi, G.S.S., Hassija, V. and Buyya, R. (2026) ‘Security and privacy in retrieval-augmented generation: architectures, threats, defenses, and future directions for building trustworthy systems’, arXiv preprint arXiv:2606.25533.",
+    "Qiu, Z., Qu, W., Zhang, J. and Yuan, B. (2026) ‘V3DB: audit-on-demand zero-knowledge proofs for verifiable vector search over committed snapshots’, arXiv preprint arXiv:2603.03065.",
+    "Reimers, N. and Gurevych, I. (2019) ‘Sentence-BERT: sentence embeddings using Siamese BERT-networks’, in *Proceedings of EMNLP-IJCNLP*, pp.3982–3992.",
+    "Robertson, S. and Zaragoza, H. (2009) ‘The probabilistic relevance framework: BM25 and beyond’, *Foundations and Trends in Information Retrieval*, Vol. 3, No. 4, pp.333–389.",
+    "Todd, P. (2018) *Merkle Mountain Ranges*, GitHub repository specification [online] https://github.com/opentimestamps/opentimestamps-server/blob/master/doc/merkle-mountain-range.md.",
+    "Wang, W., Wei, F., Dong, L., Bao, H., Yang, N. and Zhou, M. (2020) ‘MiniLM: deep self-attention distillation for task-agnostic compression of pre-trained transformers’, in *Advances in Neural Information Processing Systems (NeurIPS)*, Vol. 33, pp.5776–5788.",
+    "Wu, H. et al. (2025) ‘Zero-knowledge verifiable graph query evaluation via expansion-centric operator decomposition’, arXiv preprint arXiv:2507.00427.",
+    "Yan, S.Q. et al. (2024) ‘Corrective retrieval augmented generation’, arXiv preprint arXiv:2401.15884.",
+    "Ye, H., Guo, J., Liu, Z. and Lam, K.-Y. (2026) ‘ppRAG: efficient privacy-preserving retrieval-augmented generation with distance-preserving encryption’, arXiv preprint arXiv:2601.12331.",
+    "Zhang, Z. et al. (2026) ‘VERIF: an efficient zero-knowledge proof system for verifying IVF-Flat retrieval in RAG services’, *IACR Cryptology ePrint Archive*, Report 2026/1802.",
+]
+assert REFS == sorted(REFS, key=lambda s: s.lower()), "references not alphabetical"
+for r in REFS:
+    p = para(r, size=10, after=3, align="l")
+    p.paragraph_format.left_indent = Cm(0.8)
+    p.paragraph_format.first_line_indent = Cm(-0.8)
+
+h1("Biographical notes")
+for n in ("Arulprasath V", "Srinithi R", "Sriram R", "Jafer Sathik B"):
+    para(f"**{n}** is a B.Tech student in the Department of Information Technology, PSG College of Technology, Coimbatore. "
+         "[Research interests to be supplied.]", size=10, after=3)
+para("**R. Senthil Prabha** is a Professor in the Department of Information Technology, PSG College of Technology, Coimbatore. "
+     "[Qualifications and research interests to be supplied.]", size=10, after=3)
+
+out = os.path.join(HERE, "IJCC_Manuscript_Asymmetric_RAG_Verifier.docx")
+doc.save(out)
+print("saved", out, "tables", TABLES[0], "figures", FIGURES[0])
